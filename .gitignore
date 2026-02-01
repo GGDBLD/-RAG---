@@ -1,0 +1,15 @@
+# 忽略所有文档文件（保留data文件夹，只忽略内容）
+data/
+# 忽略向量库文件夹（体积大，无需版本管理）
+chroma_db/
+# 忽略Python缓存文件
+__pycache__/
+*.pyc
+*.pyo
+# 忽略IDE配置文件
+.idea/
+.vscode/
+# 忽略日志文件
+*.log
+# 忽略环境变量文件
+.env
