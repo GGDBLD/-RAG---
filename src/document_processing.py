@@ -6,6 +6,7 @@ import fitz  # PyMuPDF
 from pypdf import PdfReader
 from rapidocr_onnxruntime import RapidOCR
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from src.utils import setup_logger
 
 logger = setup_logger('document_processing')
@@ -31,7 +32,31 @@ class DocumentProcessor:
         text = text.strip()
         return text
 
-    def process_docx(self, file_path: str) -> str:
+    def process(self, file_path: str) -> List[Document]:
+        """
+        Main entry point for processing documents
+        Returns list of Document objects with metadata
+        """
+        if not os.path.exists(file_path):
+            logger.error(f"File not found: {file_path}")
+            return []
+            
+        ext = os.path.splitext(file_path)[1].lower()
+        file_name = os.path.basename(file_path)
+        
+        try:
+            if ext == '.docx':
+                return self.process_docx(file_path, file_name)
+            elif ext == '.pdf':
+                return self.process_pdf(file_path, file_name)
+            else:
+                logger.warning(f"Unsupported file type: {ext}")
+                return []
+        except Exception as e:
+            logger.error(f"Error processing {file_path}: {e}")
+            return []
+
+    def process_docx(self, file_path: str, file_name: str) -> List[Document]:
         """
         Extract text from Word document
         """
@@ -40,45 +65,59 @@ class DocumentProcessor:
             full_text = []
             for para in doc.paragraphs:
                 full_text.append(para.text)
-            return self.clean_text('\n'.join(full_text))
+            text = self.clean_text('\n'.join(full_text))
+            
+            chunks = self.text_splitter.split_text(text)
+            return [Document(page_content=c, metadata={"source": file_name, "page": 1}) for c in chunks]
         except Exception as e:
             logger.error(f"Error processing docx {file_path}: {e}")
-            return ""
+            return []
 
-    def process_pdf(self, file_path: str) -> str:
+    def process_pdf(self, file_path: str, file_name: str) -> List[Document]:
         """
         Extract text from PDF (Text-based or Scanned)
         """
         try:
             reader = PdfReader(file_path)
-            raw_text = ""
+            documents = []
+            is_scanned = True
             
-            # First try to extract text directly
-            for page in reader.pages:
-                extracted = page.extract_text()
-                if extracted:
-                    raw_text += extracted
+            # Check first few pages to decide if scanned
+            check_text = ""
+            for i in range(min(3, len(reader.pages))):
+                check_text += reader.pages[i].extract_text() or ""
+            
+            if len(check_text.strip()) >= 10:
+                is_scanned = False
+                logger.info(f"PDF {file_name} identified as Text PDF.")
+            else:
+                logger.info(f"PDF {file_name} identified as Scanned PDF. Using OCR.")
+                return self.process_scanned_pdf(file_path, file_name)
 
-            # Check if text content is sufficient (>= 10 chars)
-            if len(raw_text.strip()) >= 10:
-                logger.info(f"PDF {file_path} identified as Text PDF.")
-                return self.clean_text(raw_text)
-            
-            # If content is short, treat as Scanned PDF and use OCR
-            logger.info(f"PDF {file_path} identified as Scanned PDF (text len < 10). Using OCR.")
-            return self.process_scanned_pdf(file_path)
+            # Process Text PDF page by page
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text()
+                if text:
+                    clean_text = self.clean_text(text)
+                    page_chunks = self.text_splitter.split_text(clean_text)
+                    for chunk in page_chunks:
+                        documents.append(Document(
+                            page_content=chunk, 
+                            metadata={"source": file_name, "page": i + 1}
+                        ))
+            return documents
 
         except Exception as e:
             logger.error(f"Error processing pdf {file_path}: {e}")
-            return ""
+            return []
 
-    def process_scanned_pdf(self, file_path: str) -> str:
+    def process_scanned_pdf(self, file_path: str, file_name: str) -> List[Document]:
         """
         Use RapidOCR + PyMuPDF to extract text from scanned PDF
         """
         try:
             doc = fitz.open(file_path)
-            full_text = []
+            documents = []
             
             for page_num in range(len(doc)):
                 page = doc[page_num]
@@ -89,43 +128,33 @@ class DocumentProcessor:
                 # RapidOCR accepts bytes directly
                 img_bytes = pix.tobytes("png")
                 
-                # result structure: [[[[points], text, score], ...], elapse]
-                # Note: rapidocr call returns (result, elapse)
                 result, _ = self.ocr(img_bytes)
                 
+                page_text = ""
                 if result:
                     for line in result:
-                        # line structure: [[points], text, score]
                         if line and len(line) >= 2:
-                             full_text.append(line[1])
+                             page_text += line[1] + "\n"
+                
+                if page_text:
+                    clean_text = self.clean_text(page_text)
+                    page_chunks = self.text_splitter.split_text(clean_text)
+                    for chunk in page_chunks:
+                        documents.append(Document(
+                            page_content=chunk, 
+                            metadata={"source": file_name, "page": page_num + 1}
+                        ))
             
-            return self.clean_text('\n'.join(full_text))
+            return documents
+            
         except Exception as e:
-            logger.error(f"Error in OCR processing for {file_path}: {e}")
-            return ""
-
+            logger.error(f"Error processing scanned pdf {file_path}: {e}")
+            return []
+            
+    # Deprecated legacy method
     def get_chunks(self, file_path: str) -> List[str]:
-        """
-        Main entry point: process file and return chunks
-        """
-        file_ext = os.path.splitext(file_path)[1].lower()
-        content = ""
-        
-        if file_ext == '.docx':
-            content = self.process_docx(file_path)
-        elif file_ext == '.pdf':
-            content = self.process_pdf(file_path)
-        else:
-            logger.warning(f"Unsupported file type: {file_ext}")
-            return []
+        docs = self.process(file_path)
+        return [d.page_content for d in docs]
 
-        if not content:
-            logger.warning(f"No content extracted from {file_path}")
-            return []
-
-        chunks = self.text_splitter.split_text(content)
-        logger.info(f"Extracted {len(chunks)} chunks from {file_path}")
-        return chunks
-
-# Singleton instance for easy import
+# Singleton
 doc_processor = DocumentProcessor()

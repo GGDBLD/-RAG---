@@ -13,8 +13,11 @@ class QAChainHandler:
         # Assumes Ollama is running at default local address
         self.llm = Ollama(
             base_url="http://127.0.0.1:11434",
-            model="qwen:1.8b-chat",
-            temperature=0.1 # Low temperature for factual QA
+            model="qwen:1.8b",
+            temperature=0.3, # Slightly increased to avoid repetition loops
+            repeat_penalty=1.3, # Penalize repetition strongly
+            top_k=40,
+            top_p=0.9
         )
         
         # Define Prompt Template
@@ -46,46 +49,108 @@ class QAChainHandler:
 
     def format_sources(self, docs: List[Document]) -> str:
         """
-        Format source metadata for display
+        Format source metadata for display (Source + Page)
         """
         if not docs:
             return ""
             
-        sources = set()
+        sources = []
         for doc in docs:
             source = doc.metadata.get('source', 'Unknown')
-            sources.add(source)
+            page = doc.metadata.get('page', 'N/A')
+            sources.append(f"{source} (Page {page})")
             
-        return "\n\n(信息来源: " + ", ".join(list(sources)) + ")"
+        # Deduplicate while preserving order
+        seen = set()
+        unique_sources = []
+        for s in sources:
+            if s not in seen:
+                unique_sources.append(s)
+                seen.add(s)
+            
+        return "\n\n(信息来源: " + ", ".join(unique_sources) + ")"
 
-    def answer_question(self, question: str) -> Tuple[str, List[Dict]]:
+    def answer_question(self, question: str, chat_history: List[Tuple[str, str]] = None) -> Tuple[str, List[Dict]]:
         """
         Main QA function
+        Args:
+            question: Current user question
+            chat_history: List of (user_input, ai_response) tuples
         Returns: (Answer string, List of source dicts)
         """
         try:
-            # 1. Retrieve relevant documents
-            logger.info(f"Searching for: {question}")
-            docs = vector_store.search(question, k=3)
+            # 1. Condense question if history exists
+            search_query = question
+            if chat_history and len(chat_history) > 0:
+                logger.info("Contextualizing question...")
+                # Simple prompt to rephrase question based on history
+                history_text = ""
+                # Handle Gradio 3.x tuple format: [(user, bot), (user, bot)]
+                # Or list of lists: [[user, bot], [user, bot]]
+                # Or messages format: [{'role': 'user', 'content': ...}, ...]
+                # Or ChatMessage objects (Gradio 4.x+)
+                for interaction in chat_history[-6:]: # Use last few interactions
+                    if isinstance(interaction, dict):
+                        role = interaction.get('role', '')
+                        content = interaction.get('content', '')
+                        if role == 'user':
+                             history_text += f"User: {content}\n"
+                        elif role == 'assistant':
+                             history_text += f"Assistant: {content}\n"
+                    elif hasattr(interaction, 'role') and hasattr(interaction, 'content'):
+                        # Handle ChatMessage objects
+                        role = getattr(interaction, 'role', '')
+                        content = getattr(interaction, 'content', '')
+                        if role == 'user':
+                             history_text += f"User: {content}\n"
+                        elif role == 'assistant':
+                             history_text += f"Assistant: {content}\n"
+                    elif isinstance(interaction, (list, tuple)) and len(interaction) == 2:
+                        q, a = interaction[0], interaction[1]
+                        history_text += f"User: {q}\nAssistant: {a}\n"
+                
+                rephrase_prompt = (
+                    f"Given the following conversation and a follow up question, "
+                    f"rephrase the follow up question to be a standalone question. "
+                    f"If the question is already standalone, just return it as is.\n\n"
+                    f"Chat History:\n{history_text}\n"
+                    f"Follow Up Input: {question}\n"
+                    f"Standalone Question:"
+                )
+                
+                try:
+                    search_query = self.llm.invoke(rephrase_prompt).strip()
+                    logger.info(f"Rephrased: '{question}' -> '{search_query}'")
+                except Exception as e:
+                    logger.warning(f"Failed to rephrase question: {e}")
+                    search_query = question
+
+            # 2. Retrieve relevant documents
+            logger.info(f"Searching for: {search_query}")
+            docs = vector_store.search(search_query, k=3)
             
             if not docs:
                 return "未在知识库中找到相关文档。", []
 
-            # 2. Build context
+            # 3. Build context
             context = self.format_docs(docs)
             
-            # 3. Generate prompt
-            prompt_text = self.prompt.format(context=context, question=question)
+            # 4. Generate prompt
+            # Use original question for the answer generation to keep tone, 
+            # or use search_query? Usually original question is better for "You asked...", 
+            # but search_query is better for context match. 
+            # Let's use search_query for clarity in what is being answered.
+            prompt_text = self.prompt.format(context=context, question=search_query)
             
-            # 4. Call LLM
+            # 5. Call LLM
             logger.info("Calling LLM...")
             response = self.llm.invoke(prompt_text)
             
-            # 5. Supplement sources
+            # 6. Supplement sources
             final_answer = response.strip() + self.format_sources(docs)
             
             # Return sources as list of dicts for UI if needed
-            source_list = [{"source": d.metadata.get('source'), "content": d.page_content} for d in docs]
+            source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]
             
             return final_answer, source_list
 

@@ -54,27 +54,21 @@ class VectorStoreHandler:
 
         logger.info(f"Processing document: {file_path}")
         try:
-            # 1. Get text chunks
-            chunks = doc_processor.get_chunks(file_path)
-            if not chunks:
+            # 1. Get documents with metadata (page, source)
+            documents = doc_processor.process(file_path)
+            if not documents:
                 return False, "No text extracted from document", 0
 
-            # 2. Create Document objects with metadata
-            documents = []
-            file_name = os.path.basename(file_path)
-            for chunk in chunks:
-                metadata = {
-                    "source": file_name,
-                    "doc_type": doc_type
-                }
-                documents.append(Document(page_content=chunk, metadata=metadata))
+            # 2. Add extra metadata
+            for doc in documents:
+                doc.metadata["doc_type"] = doc_type
 
             # 3. Add to ChromaDB
             self.vectordb.add_documents(documents)
             # Persist is automatic in newer Chroma versions, but good to know
             
             logger.info(f"Added {len(documents)} chunks to Vector Store")
-            return True, f"Successfully added {file_name}", len(documents)
+            return True, f"Successfully added {os.path.basename(file_path)}", len(documents)
 
         except Exception as e:
             logger.error(f"Error adding document: {e}")
@@ -90,6 +84,65 @@ class VectorStoreHandler:
         except Exception as e:
             logger.error(f"Error searching: {e}")
             return []
+
+    def get_indexed_files(self) -> List[str]:
+        """
+        Get list of filenames already indexed in the vector store
+        """
+        try:
+            # Fetch all metadata
+            data = self.vectordb.get(include=['metadatas'])
+            if not data or 'metadatas' not in data:
+                return []
+            
+            # Extract unique source filenames
+            sources = set()
+            for meta in data['metadatas']:
+                if meta and 'source' in meta:
+                    sources.add(meta['source'])
+            return list(sources)
+        except Exception as e:
+            logger.error(f"Error getting indexed files: {e}")
+            return []
+
+    def scan_and_ingest(self, folder_path: str) -> List[str]:
+        """
+        Scan folder for new files and ingest them
+        Returns list of newly added files
+        """
+        if not os.path.exists(folder_path):
+            logger.warning(f"Folder not found: {folder_path}")
+            return []
+
+        logger.info(f"Scanning folder: {folder_path}")
+        indexed_files = self.get_indexed_files()
+        logger.info(f"Found {len(indexed_files)} already indexed files.")
+        
+        added_files = []
+        
+        # Supported extensions from DocumentProcessor
+        valid_exts = ['.docx', '.pdf']
+        
+        for root, _, files in os.walk(folder_path):
+            for file in files:
+                ext = os.path.splitext(file)[1].lower()
+                if ext in valid_exts:
+                    if file not in indexed_files:
+                        full_path = os.path.join(root, file)
+                        logger.info(f"Auto-ingesting new file: {file}")
+                        # Default to 'core' doc_type for auto-ingested files
+                        success, _, _ = self.add_document(full_path, doc_type='core')
+                        if success:
+                            added_files.append(file)
+                    else:
+                        logger.debug(f"Skipping already indexed file: {file}")
+                        
+        if added_files:
+            logger.info(f"Auto-ingestion complete. Added {len(added_files)} files: {added_files}")
+        else:
+            logger.info("No new files found to ingest.")
+            
+        return added_files
 
 # Singleton
 vector_store = VectorStoreHandler()
