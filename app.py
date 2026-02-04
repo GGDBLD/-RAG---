@@ -1,76 +1,72 @@
 import gradio as gr
 import os
-from src.vector_store import add_doc_to_vector_db
-from src.qa_chain import get_answer
+import shutil
+from src.vector_store import vector_store
+from src.qa_chain import qa_chain
 
-# 自定义CSS，优化界面
-CSS = """
-.gradio-container {max-width: 1200px !important;}
-#chatbot {height: 500px !important;}
-#upload_btn {margin-top: 10px !important;}
-"""
-
-def upload_doc(file, doc_type):
-    """
-    上传文档并入库
-    """
-    if not file:
-        return "请选择要上传的文件！"
+def upload_and_process(file_obj, doc_type):
+    if not file_obj:
+        return "请选择文件。"
     
-    try:
-        # 入库
-        chunk_count = add_doc_to_vector_db(file.name, doc_type)
-        return f"文档上传成功！\n文件名：{os.path.basename(file.name)}\n新增片段数：{chunk_count}"
-    except Exception as e:
-        return f"文档上传失败：{str(e)}"
-
-def chat(message, history):
-    """
-    问答交互逻辑
-    """
-    history = history or []
-    if not message.strip():
-        history.append((message, "请输入有效的问题！"))
-        return history, history
+    # Save temp file to work with absolute path or keep it as is
+    # Gradio passes a temp file path usually
+    file_path = file_obj.name
     
-    # 获取回答
-    answer = get_answer(message)
+    # Ensure we can read it. 
+    # If the user wants to keep files in a specific directory, we might move them.
+    # For now, just process the temp file.
+    
+    success, msg, num_chunks = vector_store.add_document(file_path, doc_type)
+    
+    if success:
+        return f"成功！文件名: {os.path.basename(file_path)}\n类型: {doc_type}\n新增片段数: {num_chunks}"
+    else:
+        return f"失败: {msg}"
+
+def chat_response(message, history):
+    if not message:
+        return "", history
+    
+    # Call QA Chain
+    answer, _ = qa_chain.answer_question(message)
+    
     history.append((message, answer))
-    return history, history
+    return "", history
 
-# 构建Gradio界面
-with gr.Blocks(css=CSS, title="水声工程知识库") as demo:
-    gr.Markdown("# 水声工程RAG知识库")
-    gr.Markdown("### 步骤1：上传文档构建知识库 | 步骤2：输入问题获取回答")
+with gr.Blocks(title="水声工程 RAG 知识库系统") as demo:
+    gr.Markdown("# 水声工程领域离线知识库系统")
     
     with gr.Tab("文档上传"):
-        file_upload = gr.File(label="选择文档（支持.docx/.pdf，扫描版自动OCR）", file_types=[".docx", ".pdf"])
-        doc_type = gr.Radio(["core", "supplement"], label="文档类型", value="core", 
-                           info="core：核心教材 | supplement：补充文档")
-        upload_btn = gr.Button("上传并入库", id="upload_btn")
-        upload_output = gr.Textbox(label="上传结果", lines=3)
-    
+        gr.Markdown("### 上传文档到知识库")
+        with gr.Row():
+            file_input = gr.File(
+                label="上传文件 (.docx, .pdf)",
+                file_types=[".docx", ".pdf"]
+            )
+            doc_type_input = gr.Radio(
+                choices=["core", "supplement"],
+                label="文档类型",
+                value="core"
+            )
+        upload_button = gr.Button("上传并入库")
+        upload_output = gr.Textbox(label="上传结果", interactive=False)
+        
+        upload_button.click(
+            upload_and_process,
+            inputs=[file_input, doc_type_input],
+            outputs=upload_output
+        )
+        
     with gr.Tab("智能问答"):
-        chatbot = gr.Chatbot(id="chatbot", label="问答记录")
-        msg = gr.Textbox(label="输入你的问题（如：海水声速与哪些因素有关？）")
+        gr.Markdown("### 领域问答")
+        chatbot = gr.Chatbot(label="对话记录", height=500)
+        msg = gr.Textbox(label="请输入问题", placeholder="输入关于水声工程的问题...")
         clear = gr.Button("清空对话")
         
-        # 绑定事件
-        msg.submit(chat, [msg, chatbot], [chatbot, chatbot])
-        clear.click(lambda: (None, None), None, [chatbot, chatbot])
-    
-    # 绑定上传事件
-    upload_btn.click(upload_doc, [file_upload, doc_type], upload_output)
+        msg.submit(chat_response, [msg, chatbot], [msg, chatbot])
+        clear.click(lambda: None, None, chatbot, queue=False)
 
-# 初始化向量库（确保文件夹存在）
-if not os.path.exists("./chroma_db"):
-    os.makedirs("./chroma_db")
-
-# 启动应用
 if __name__ == "__main__":
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,  # 本地运行，不生成公网链接
-        inbrowser=True  # 自动打开浏览器
-    )
+    # Launch on all interfaces so it's accessible, but user said local offline.
+    # 127.0.0.1 is default.
+    demo.launch(server_name="127.0.0.1", server_port=7860)

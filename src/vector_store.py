@@ -1,104 +1,95 @@
 import os
-from chromadb import Client
-from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
-from typing import List, Dict
-from src.document_processing import read_file, split_text
+from typing import List, Tuple
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_core.documents import Document
+from src.document_processing import doc_processor
+from src.utils import setup_logger
 
-# 初始化ChromaDB客户端
-CHROMA_DB_PATH = "./chroma_db"
-client = Client(Settings(persist_directory=CHROMA_DB_PATH, anonymized_telemetry=False))
+logger = setup_logger('vector_store')
 
-# 初始化嵌入模型（BGE中文模型）
-embedding_model = SentenceTransformer('BAAI/bge-small-zh-v1.5')
+class VectorStoreHandler:
+    def __init__(self):
+        # Initialize Embedding Model
+        # Using BAAI/bge-small-zh-v1.5 as requested
+        # It will be downloaded to default cache if not present
+        logger.info("Initializing Embedding Model...")
+        # Use local model path
+        model_path = r"e:\rag_project\models\bge-small-zh-v1.5"
+        
+        try:
+            logger.info(f"Loading model from local path: {model_path}")
+            self.embedding_function = HuggingFaceEmbeddings(
+                model_name=model_path,
+                model_kwargs={'device': 'cpu'}, 
+                encode_kwargs={'normalize_embeddings': True},
+                show_progress=False
+            )
+        except Exception as e:
+            logger.error(f"Failed to load embedding model from {model_path}: {e}")
+            raise e
+        
+        self.persist_directory = "./chroma_db"
+        self.collection_name = "water_acoustic_kb"
+        
+        # Initialize ChromaDB
+        logger.info(f"Initializing ChromaDB at {self.persist_directory}")
+        self.vectordb = Chroma(
+            persist_directory=self.persist_directory,
+            embedding_function=self.embedding_function,
+            collection_name=self.collection_name
+        )
 
-# 创建/获取知识库集合
-def get_or_create_collection(collection_name: str = "water_acoustic_kb"):
-    """
-    获取或创建ChromaDB集合
-    """
-    try:
-        collection = client.get_collection(name=collection_name)
-    except:
-        collection = client.create_collection(name=collection_name)
-    return collection
+    def add_document(self, file_path: str, doc_type: str) -> Tuple[bool, str, int]:
+        """
+        Add document to vector store
+        Args:
+            file_path: Path to the file
+            doc_type: 'core' or 'supplement'
+        Returns:
+            (success, message, num_chunks)
+        """
+        if not os.path.exists(file_path):
+            return False, "File does not exist", 0
 
-def text_to_embeddings(texts: List[str]) -> List[List[float]]:
-    """
-    将文本列表转换为向量列表
-    """
-    return embedding_model.encode(texts, convert_to_numpy=False).tolist()
+        logger.info(f"Processing document: {file_path}")
+        try:
+            # 1. Get text chunks
+            chunks = doc_processor.get_chunks(file_path)
+            if not chunks:
+                return False, "No text extracted from document", 0
 
-def add_doc_to_vector_db(file_path: str, doc_type: str = "supplement"):
-    """
-    将文档读取、分块、向量化后存入向量库
-    """
-    # 1. 读取文件
-    raw_text = read_file(file_path)
-    if not raw_text:
-        print(f"文件无有效内容，跳过：{file_path}")
-        return
-    
-    # 2. 文本分块
-    text_chunks = split_text(raw_text)
-    if not text_chunks:
-        print(f"文本分块失败，跳过：{file_path}")
-        return
-    
-    # 3. 生成向量
-    embeddings = text_to_embeddings(text_chunks)
-    
-    # 4. 准备元数据和ID
-    file_name = os.path.basename(file_path)
-    ids = [f"{file_name}_{i}" for i in range(len(text_chunks))]
-    metadatas = [{"source": file_name, "type": doc_type} for _ in text_chunks]
-    
-    # 5. 存入向量库
-    collection = get_or_create_collection()
-    collection.add(
-        documents=text_chunks,
-        embeddings=embeddings,
-        ids=ids,
-        metadatas=metadatas
-    )
-    
-    print(f"文档入库成功：{file_name} → 新增 {len(text_chunks)} 个片段")
-    return len(text_chunks)
+            # 2. Create Document objects with metadata
+            documents = []
+            file_name = os.path.basename(file_path)
+            for chunk in chunks:
+                metadata = {
+                    "source": file_name,
+                    "doc_type": doc_type
+                }
+                documents.append(Document(page_content=chunk, metadata=metadata))
 
-def search_similar_text(query: str, top_k: int = 3) -> List[Dict]:
-    """
-    检索与查询相似的文本片段
-    """
-    # 生成查询向量
-    query_embedding = embedding_model.encode([query])[0].tolist()
-    
-    # 检索相似片段
-    collection = get_or_create_collection()
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=top_k
-    )
-    
-    # 格式化结果
-    similar_docs = []
-    for i in range(top_k):
-        if i < len(results['documents'][0]):
-            similar_docs.append({
-                "text": results['documents'][0][i],
-                "source": results['metadatas'][0][i]['source'],
-                "type": results['metadatas'][0][i]['type']
-            })
-    
-    return similar_docs
+            # 3. Add to ChromaDB
+            self.vectordb.add_documents(documents)
+            # Persist is automatic in newer Chroma versions, but good to know
+            
+            logger.info(f"Added {len(documents)} chunks to Vector Store")
+            return True, f"Successfully added {file_name}", len(documents)
 
-if __name__ == "__main__":
-    # 测试向量库
-    test_file = "../data/main/水声学基础.docx"
-    add_doc_to_vector_db(test_file, "core")
-    
-    # 测试检索
-    query = "海水声速与哪些因素有关？"
-    results = search_similar_text(query)
-    print(f"\n检索结果（{query}）：")
-    for doc in results:
-        print(f"来源：{doc['source']} → {doc['text'][:100]}...")
+        except Exception as e:
+            logger.error(f"Error adding document: {e}")
+            return False, str(e), 0
+
+    def search(self, query: str, k: int = 3) -> List[Document]:
+        """
+        Search for relevant documents
+        """
+        try:
+            results = self.vectordb.similarity_search(query, k=k)
+            return results
+        except Exception as e:
+            logger.error(f"Error searching: {e}")
+            return []
+
+# Singleton
+vector_store = VectorStoreHandler()

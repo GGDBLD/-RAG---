@@ -1,140 +1,131 @@
 import os
 import re
-from docx import Document
+from typing import List
+import docx
+import fitz  # PyMuPDF
 from pypdf import PdfReader
-from paddleocr import PaddleOCR
-from typing import List, TextIO
+from rapidocr_onnxruntime import RapidOCR
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from src.utils import setup_logger
 
-# 初始化PaddleOCR（CPU版，禁用GPU）
-try:
-    # print("Creating PaddleOCR instance...", flush=True)
-    # show_log参数在旧版本有效，新版本可能已移除或改名，这里移除以确保兼容性
-    # use_angle_cls已废弃，建议使用use_angle_cls=True或ignore it? Warning said use `use_textline_orientation`.
-    # Let's check the warning again: "The parameter `use_angle_cls` has been deprecated ... Please use `use_textline_orientation` instead."
-    # But PaddleOCR signature might still accept use_angle_cls.
-    # The error was "Unknown argument: show_log" and "Unknown argument: use_gpu".
-    # Removing use_gpu as well.
-    ocr = PaddleOCR(use_angle_cls=True, lang='ch')
-    # print("PaddleOCR initialized successfully.", flush=True)
-except Exception as e:
-    print(f"PaddleOCR initialization failed: {e}")
-    ocr = None
+logger = setup_logger('document_processing')
 
-def clean_text(text: str) -> str:
-    """
-    清洗文本：去除多余空格、换行、特殊字符
-    """
-    # 去除多余空格和换行
-    text = re.sub(r'\s+', ' ', text)
-    # 去除特殊字符（保留中文、英文、数字、标点）
-    text = re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9，。！？；：""''（）【】《》、·]', '', text)
-    return text.strip()
+class DocumentProcessor:
+    def __init__(self):
+        # Initialize RapidOCR
+        # It's lighter and doesn't have the dependency hell of PaddleOCR
+        self.ocr = RapidOCR()
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
+        )
 
-def read_docx(file_path: str) -> str:
-    """
-    读取Word文档（.docx）
-    """
-    try:
-        doc = Document(file_path)
-        full_text = []
-        for para in doc.paragraphs:
-            if para.text.strip():
-                full_text.append(para.text)
-        return clean_text('\n'.join(full_text))
-    except Exception as e:
-        print(f"读取Word文档失败：{e}")
-        return ""
-
-def read_pdf_text(file_path: str) -> str:
-    """
-    读取PDF文本（可复制的文本PDF）
-    """
-    try:
-        reader = PdfReader(file_path)
-        full_text = []
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                full_text.append(page_text)
-        return clean_text('\n'.join(full_text))
-    except Exception as e:
-        print(f"读取PDF文本失败：{e}")
-        return ""
-
-def read_pdf_ocr(file_path: str) -> str:
-    """
-    OCR识别扫描版PDF（图片型PDF）
-    """
-    try:
-        print(f"检测到扫描版PDF，启动OCR处理：{os.path.basename(file_path)}")
-        # PaddleOCR直接处理PDF文件
-        result = ocr.ocr(file_path, cls=True)
-        full_text = []
-        for page_result in result:
-            if page_result:
-                page_text = ' '.join([line[1][0] for line in page_result])
-                full_text.append(page_text)
-        return clean_text('\n'.join(full_text))
-    except Exception as e:
-        print(f"OCR识别PDF失败：{e}")
-        return ""
-
-def read_file(file_path: str) -> str:
-    """
-    统一读取文件入口：自动判断文件类型，扫描版PDF自动OCR
-    """
-    if not os.path.exists(file_path):
-        print(f"文件不存在：{file_path}")
-        return ""
-    
-    # 获取文件后缀
-    ext = os.path.splitext(file_path)[-1].lower()
-    
-    # 读取不同类型文件
-    if ext == '.docx':
-        return read_docx(file_path)
-    elif ext == '.pdf':
-        # 先尝试普通读取，若内容为空则OCR
-        text = read_pdf_text(file_path)
-        if len(text) < 10:  # 内容过短，判定为扫描版
-            text = read_pdf_ocr(file_path)
+    def clean_text(self, text: str) -> str:
+        """
+        Clean extra spaces and special characters
+        """
+        # Replace multiple spaces with single space
+        text = re.sub(r'\s+', ' ', text)
+        # Remove control characters but keep basic punctuation
+        text = text.strip()
         return text
-    else:
-        print(f"不支持的文件类型：{ext}")
-        return ""
 
-def split_text(text: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
-    """
-    文本分块：将长文本切分为固定大小的片段，用于向量化
-    """
-    if not text:
-        return []
-    
-    chunks = []
-    start = 0
-    text_length = len(text)
-    
-    while start < text_length:
-        end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        # 重叠部分，避免语义割裂
-        start += chunk_size - chunk_overlap
-    
-    return chunks
+    def process_docx(self, file_path: str) -> str:
+        """
+        Extract text from Word document
+        """
+        try:
+            doc = docx.Document(file_path)
+            full_text = []
+            for para in doc.paragraphs:
+                full_text.append(para.text)
+            return self.clean_text('\n'.join(full_text))
+        except Exception as e:
+            logger.error(f"Error processing docx {file_path}: {e}")
+            return ""
 
-if __name__ == "__main__":
-    # 测试函数
-    # 使用绝对路径或相对于项目根目录的路径
-    test_pdf = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "supplement", "复杂海洋环境舰船水下噪声特性研究.pdf")
-    # test_pdf = "../data/supplement/测试扫描版.pdf"
-    
-    if os.path.exists(test_pdf):
-        print(f"正在读取测试文件：{test_pdf}")
-        test_text = read_file(test_pdf)
-        print(f"读取到的文本长度：{len(test_text)}")
-        print(f"文本片段数：{len(split_text(test_text))}")
-        if len(test_text) > 0:
-            print(f"前100字符预览：{test_text[:100]}")
-    else:
-        print(f"测试文件不存在：{test_pdf}")
+    def process_pdf(self, file_path: str) -> str:
+        """
+        Extract text from PDF (Text-based or Scanned)
+        """
+        try:
+            reader = PdfReader(file_path)
+            raw_text = ""
+            
+            # First try to extract text directly
+            for page in reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    raw_text += extracted
+
+            # Check if text content is sufficient (>= 10 chars)
+            if len(raw_text.strip()) >= 10:
+                logger.info(f"PDF {file_path} identified as Text PDF.")
+                return self.clean_text(raw_text)
+            
+            # If content is short, treat as Scanned PDF and use OCR
+            logger.info(f"PDF {file_path} identified as Scanned PDF (text len < 10). Using OCR.")
+            return self.process_scanned_pdf(file_path)
+
+        except Exception as e:
+            logger.error(f"Error processing pdf {file_path}: {e}")
+            return ""
+
+    def process_scanned_pdf(self, file_path: str) -> str:
+        """
+        Use RapidOCR + PyMuPDF to extract text from scanned PDF
+        """
+        try:
+            doc = fitz.open(file_path)
+            full_text = []
+            
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                # Render page to image (zoom=2 for better quality)
+                mat = fitz.Matrix(2, 2)
+                pix = page.get_pixmap(matrix=mat)
+                
+                # RapidOCR accepts bytes directly
+                img_bytes = pix.tobytes("png")
+                
+                # result structure: [[[[points], text, score], ...], elapse]
+                # Note: rapidocr call returns (result, elapse)
+                result, _ = self.ocr(img_bytes)
+                
+                if result:
+                    for line in result:
+                        # line structure: [[points], text, score]
+                        if line and len(line) >= 2:
+                             full_text.append(line[1])
+            
+            return self.clean_text('\n'.join(full_text))
+        except Exception as e:
+            logger.error(f"Error in OCR processing for {file_path}: {e}")
+            return ""
+
+    def get_chunks(self, file_path: str) -> List[str]:
+        """
+        Main entry point: process file and return chunks
+        """
+        file_ext = os.path.splitext(file_path)[1].lower()
+        content = ""
+        
+        if file_ext == '.docx':
+            content = self.process_docx(file_path)
+        elif file_ext == '.pdf':
+            content = self.process_pdf(file_path)
+        else:
+            logger.warning(f"Unsupported file type: {file_ext}")
+            return []
+
+        if not content:
+            logger.warning(f"No content extracted from {file_path}")
+            return []
+
+        chunks = self.text_splitter.split_text(content)
+        logger.info(f"Extracted {len(chunks)} chunks from {file_path}")
+        return chunks
+
+# Singleton instance for easy import
+doc_processor = DocumentProcessor()
