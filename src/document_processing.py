@@ -17,8 +17,8 @@ class DocumentProcessor:
         # It's lighter and doesn't have the dependency hell of PaddleOCR
         self.ocr = RapidOCR()
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50,
+            chunk_size=800,  # Increased from 500 to reduce fragmentation
+            chunk_overlap=150, # Increased overlap for better continuity
             separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
         )
 

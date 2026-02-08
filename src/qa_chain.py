@@ -4,33 +4,49 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from src.vector_store import vector_store
 from src.utils import setup_logger
+import os
+from sentence_transformers import CrossEncoder
 
 logger = setup_logger('qa_chain')
 
 class QAChainHandler:
     def __init__(self):
+        # Initialize Reranker
+        # Try to load local reranker model, fallback to None if not found
+        self.reranker_path = r"e:\rag_project\models\bge-reranker-base"
+        self.reranker = None
+        if os.path.exists(self.reranker_path):
+            try:
+                logger.info(f"Loading Reranker model from {self.reranker_path}...")
+                self.reranker = CrossEncoder(self.reranker_path)
+                logger.info("Reranker loaded successfully.")
+            except Exception as e:
+                logger.error(f"Failed to load Reranker: {e}")
+        else:
+            logger.warning(f"Reranker model not found at {self.reranker_path}. Running in retrieval-only mode.")
+
         # Initialize Ollama
         # Assumes Ollama is running at default local address
         self.llm = Ollama(
             base_url="http://127.0.0.1:11434",
             model="qwen:1.8b",
-            temperature=0.3, # Slightly increased to avoid repetition loops
-            repeat_penalty=1.3, # Penalize repetition strongly
+            temperature=0.2,  # Slightly increase to avoid getting stuck
+            # Removed repeat_penalty to prevent gibberish output
             top_k=40,
             top_p=0.9
         )
         
         # Define Prompt Template
-        template = """基于以下已知信息，回答用户的问题。
-如果无法从已知信息中得到答案，请直接回答“未找到相关答案”，不要编造信息。
+        template = """你是一个智能助手。根据【已知信息】回答【问题】。
+如果【已知信息】中没有答案，请直接说“不知道”。不要编造。
 
-已知信息：
+【已知信息】：
 {context}
 
-问题：
+【问题】：
 {question}
 
-回答："""
+【回答】："""
         
         self.prompt = PromptTemplate(
             template=template,
@@ -125,29 +141,69 @@ class QAChainHandler:
                     logger.warning(f"Failed to rephrase question: {e}")
                     search_query = question
 
-            # 2. Retrieve relevant documents
-            logger.info(f"Searching for: {search_query}")
-            docs = vector_store.search(search_query, k=3)
+            # 2. Retrieve documents
+            logger.info(f"Retrieving documents for: {search_query}")
             
-            if not docs:
-                return "未在知识库中找到相关文档。", []
+            # Rerank strategy: Retrieve more candidates first, then rerank
+            initial_k = 20 if self.reranker else 3
+            candidate_docs = vector_store.search(search_query, k=initial_k)
+            
+            docs = candidate_docs
+            if self.reranker and candidate_docs:
+                logger.info("Reranking documents...")
+                try:
+                    pairs = [[search_query, doc.page_content] for doc in candidate_docs]
+                    scores = self.reranker.predict(pairs)
+                    scored_docs = list(zip(candidate_docs, scores))
+                    scored_docs.sort(key=lambda x: x[1], reverse=True)
+                    docs = [doc for doc, score in scored_docs[:3]]
+                    
+                    print("\n--- Rerank Results ---")
+                    for i, (doc, score) in enumerate(scored_docs[:3]):
+                        print(f"[{i+1}] Score: {score:.4f} | Content: {doc.page_content[:50]}...")
+                    print("----------------------\n")
+                except Exception as e:
+                    logger.error(f"Reranking failed: {e}. Fallback to original order.")
+                    docs = candidate_docs[:3]
+            
+            # DEBUG: Print context to console
+            print(f"\n--- DEBUG: Context for '{search_query}' ---")
+            for i, doc in enumerate(docs):
+                snippet = doc.page_content.replace('\n', ' ')[:200]
+                print(f"[Doc {i}] {snippet}...")
+            print("-------------------------------------------\n")
 
-            # 3. Build context
+            if not docs:
+                return "抱歉，知识库中没有找到相关信息。", []
+
+            # 3. Generate Answer
             context = self.format_docs(docs)
+            chain = self.prompt | self.llm
             
-            # 4. Generate prompt
-            # Use original question for the answer generation to keep tone, 
-            # or use search_query? Usually original question is better for "You asked...", 
-            # but search_query is better for context match. 
-            # Let's use search_query for clarity in what is being answered.
-            prompt_text = self.prompt.format(context=context, question=search_query)
+            logger.info("Generating answer...")
+            response = chain.invoke({
+                "context": context,
+                "question": question
+            })
             
-            # 5. Call LLM
-            logger.info("Calling LLM...")
-            response = self.llm.invoke(prompt_text)
+            # Post-processing: Anti-repetition
+            # Simple check: if a substring of length > 10 repeats > 3 times, truncate it
+            # Or just check if the last 50 chars are identical to previous 50 chars
+            final_text = response.strip()
             
+            # Basic cleanup for common loop patterns
+            lines = final_text.split('\n')
+            unique_lines = []
+            seen_lines = set()
+            for line in lines:
+                if len(line) > 10 and line in seen_lines:
+                    continue # Skip duplicate long lines
+                unique_lines.append(line)
+                seen_lines.add(line)
+            final_text = "\n".join(unique_lines)
+
             # 6. Supplement sources
-            final_answer = response.strip() + self.format_sources(docs)
+            final_answer = final_text + self.format_sources(docs)
             
             # Return sources as list of dicts for UI if needed
             source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]
