@@ -29,7 +29,7 @@ class QAChainHandler:
 
         self.llm = Ollama(
             base_url="http://127.0.0.1:11434",
-            model="qwen:1.8b",
+            model="qwen3:8b",
             temperature=0.2,
             top_k=40,
             top_p=0.9
@@ -235,6 +235,31 @@ class QAChainHandler:
                 return final_answer, source_list
 
             search_query = question
+            effective_question = question
+
+            if last_user_q:
+                followup_keywords = [
+                    "这些", "上述", "前面", "刚才", "每个方向", "每个研究方向",
+                    "每个方向分别", "举例说明", "举个例子", "具体内容",
+                    "具体研究内容", "有哪些典型", "典型研究内容", "主要任务分别",
+                    "主要作用分别", "应用场景分别"
+                ]
+                domain_keywords = [
+                    "水声工程", "主动声纳", "被动声纳", "水声定位", "水声大数据", "虚拟仿真"
+                ]
+                is_short = len(normalized_q) <= 25
+                has_followup_kw = any(k in normalized_q for k in followup_keywords)
+                has_domain_kw = any(k in normalized_q for k in domain_keywords)
+                if is_short and has_followup_kw and not has_domain_kw:
+                    combined_query = (last_user_q or "") + " " + question
+                    search_query = combined_query.strip()
+                    effective_question = (
+                        "基于前一个用户问题“"
+                        + str(last_user_q)
+                        + "”，当前追问是“"
+                        + question
+                        + "”，请结合上下文统一理解后回答。"
+                    )
 
             # 2. Retrieve documents
             logger.info(f"Retrieving documents for: {search_query}")
@@ -291,7 +316,7 @@ class QAChainHandler:
             logger.info("Generating answer...")
             response = chain.invoke({
                 "context": context,
-                "question": question
+                "question": effective_question
             })
 
             final_text = self.clean_answer(response)
