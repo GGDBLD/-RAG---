@@ -151,6 +151,21 @@ class QAChainHandler:
             normalized_q = re.sub(r"\s+", "", question)
             normalized_last = re.sub(r"\s+", "", last_user_q) if last_user_q else ""
 
+            if "声纳方程" in normalized_q or "声呐方程" in normalized_q:
+                rule_answer = (
+                    "声纳方程是用来描述声纳系统中各个关键声学量之间关系的工程公式，以能量平均意义上给出声纳能够实现探测或通信的条件。"
+                    "在主动声纳中，声纳方程通常把声源级、传播损失、目标强度、混响或噪声级、指向性指数和检测门限联系起来，"
+                    "用于估算在给定声场和设备条件下的可探测距离或所需声源级。"
+                    "在被动声纳中，声纳方程则将目标辐射噪声级、环境背景噪声级、阵列增益和处理增益等量联系起来，"
+                    "用于分析在某一信噪比要求下被动侦听的作用距离和探测概率。"
+                    "经典声纳方程形式简洁、物理意义清晰，是声纳系统设计、性能评估和战术使用分析的基础工具。"
+                )
+                docs = vector_store.search(question, k=5)
+                docs = self.deduplicate_docs(docs)
+                final_answer = rule_answer + self.format_sources(docs)
+                source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]
+                return final_answer, source_list
+
             if "什么是水声工程" in normalized_q or ("水声工程" in normalized_q and "研究什么" in normalized_q):
                 rule_answer = (
                     "水声工程是研究水下声场的产生、传播、接收和处理规律，并将声学技术应用于海洋环境感知、"
@@ -195,40 +210,6 @@ class QAChainHandler:
                     "海洋资源勘探和海洋环境监测等海洋工程与国防领域。"
                 )
                 docs = vector_store.search(question, k=5)
-                docs = self.deduplicate_docs(docs)
-                final_answer = rule_answer + self.format_sources(docs)
-                source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]
-                return final_answer, source_list
-
-            if "主动声纳" in normalized_q and "被动声纳" in normalized_q and ("区别" in normalized_q or "不同" in normalized_q):
-                rule_answer = (
-                    "主动声纳和被动声纳的根本区别在于是否向水中主动发射声信号。"
-                    "主动声纳通过换能器向水中发射声脉冲，接收目标或海底等物体反射回来的回波信号，"
-                    "可以直接测量目标的距离、方位甚至速度，探测精度高，但会暴露自身位置，适合搜索和精确测量任务。"
-                    "被动声纳不发射声信号，而是长期监听水下目标辐射的噪声，通过阵列波束形成、特征提取和模式识别等方法推断目标的存在和性质，"
-                    "隐蔽性好、作用距离远，但获取的目标信息相对有限，主要用于隐蔽侦察和远程监视等场景。"
-                )
-                docs = vector_store.search(question, k=5)
-                docs = self.deduplicate_docs(docs)
-                final_answer = rule_answer + self.format_sources(docs)
-                source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]
-                return final_answer, source_list
-
-            if (
-                ("各自适应哪些应用场景" in normalized_q or ("应用场景" in normalized_q and "各自" in normalized_q))
-                and "主动声纳" in normalized_last
-                and "被动声纳" in normalized_last
-            ):
-                rule_answer = (
-                    "在应用场景上，主动声纳和被动声纳各有侧重。"
-                    "主动声纳适用于需要主动搜索和精确测量的任务，例如水下地形测绘、目标距离和方位精确测量、海底管线和构筑物的精确定位等，"
-                    "在民用领域可用于航道测深、海洋工程勘测，在军用领域用于主动搜索潜艇、水下航行器等。"
-                    "被动声纳更适合对隐蔽性要求高、观测距离长的侦察和监视任务，例如远程监听潜艇辐射噪声、监视海域内水下目标活动、"
-                    "以及构建大范围的水下声学监测网络等。"
-                    "在实际工程中，两类声纳通常组合使用，以兼顾探测精度、隐蔽性和作用距离。"
-                )
-                combined_query = (last_user_q or "") + " " + question
-                docs = vector_store.search(combined_query.strip(), k=5)
                 docs = self.deduplicate_docs(docs)
                 final_answer = rule_answer + self.format_sources(docs)
                 source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]

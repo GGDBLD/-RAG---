@@ -1,7 +1,6 @@
 import sys
 import os
 
-# Add project root to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def run_end_to_end_test():
@@ -15,32 +14,34 @@ def run_end_to_end_test():
         print("2. [Init] 正在初始化 QA 链 (加载模型)...", flush=True)
         qa = QAChainHandler()
         print("   ✅ 初始化成功。", flush=True)
-        
-        # 测试问题
-        question = "什么是声纳方程？"
-        print(f"\n3. [Test] 正在提问: '{question}'", flush=True)
-        
-        # 计时
         import time
-        start_time = time.time()
-        
-        # 调用问答
-        # 注意：qa_chain 内部会调用 vector_store 进行检索
-        answer, sources = qa.answer_question(question, [])
-        
-        end_time = time.time()
-        duration = end_time - start_time
-        
-        print(f"\n=== 测试结果 (耗时: {duration:.2f}s) ===", flush=True)
-        print(f"【问题】: {question}", flush=True)
-        print(f"【回答】: {answer}", flush=True)
-        print(f"【来源】: {[s.get('source') for s in sources]}", flush=True)
-        
-        # 验证逻辑
-        if "无法找到" in answer or not answer.strip():
-            print("\n❌ 测试失败: 回答无效或未找到答案。", flush=True)
-        else:
-            print("\n✅ 测试通过: 系统成功生成了回答。", flush=True)
+
+        def run_case(label, question, history):
+            print(f"\n3. [Case {label}] 提问: '{question}'", flush=True)
+            start_time = time.time()
+            answer, sources = qa.answer_question(question, history)
+            end_time = time.time()
+            duration = end_time - start_time
+            print(f"   耗时: {duration:.2f}s", flush=True)
+            print(f"   回答: {answer}", flush=True)
+            print(f"   来源: {[s.get('source') for s in sources]}", flush=True)
+            if "暂时无法回答" in answer or "没有找到相关信息" in answer or not answer.strip():
+                print("   结果: ❌ 可能未从知识库中得到有效回答", flush=True)
+            else:
+                print("   结果: ✅ 已生成有效回答", flush=True)
+            history.append((question, answer))
+            return history
+
+        history = []
+
+        history = run_case("1-单轮-舰船噪声因素", "在复杂海洋环境下，影响舰船水下噪声传播的主要因素有哪些？", history)
+        history = run_case("2-单轮-水声定位油气开采", "水声定位系统在海洋油气开采作业中通常如何使用？", history)
+        history = run_case("3-单轮-大数据平台架构", "简要介绍水声大数据平台的总体功能架构。", history)
+
+        history = run_case("4-多轮-大数据平台追问", "其中哪些功能与航行安全保障直接相关？", history)
+
+        history = run_case("5-单轮-虚拟实验教学", "被动声呐虚拟仿真实验的教学目标和主要内容是什么？", history)
+        history = run_case("6-单轮-无关问题控制", "水声工程中火箭发动机设计的关键问题有哪些？", history)
 
     except Exception as e:
         print(f"\n❌ 测试过程中发生崩溃: {e}", flush=True)
