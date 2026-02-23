@@ -6,7 +6,6 @@ from src.qa_chain import qa_chain
 try:
     from gradio import ChatMessage
 except ImportError:
-    # Fallback for older Gradio versions
     class ChatMessage:
         def __init__(self, role, content):
             self.role = role
@@ -32,16 +31,38 @@ def upload_and_process(file_obj, doc_type):
         return f"失败: {msg}"
 
 def sync_data_folder_ui():
-    """UI wrapper for data folder sync"""
     folder_path = "data"
     if not os.path.exists(folder_path):
         return f"文件夹 {folder_path} 不存在。"
-    
     added_files = vector_store.scan_and_ingest(folder_path)
     if added_files:
         return f"同步成功！已自动添加 {len(added_files)} 个新文件：\n" + "\n".join(added_files)
     else:
         return "data 文件夹中没有发现新文件（所有文件均已入库）。"
+
+
+def get_kb_overview():
+    try:
+        files = vector_store.get_indexed_files()
+        num_files = len(files)
+        data = vector_store.vectordb.get()
+        num_chunks = 0
+        if data and "ids" in data:
+            num_chunks = len(data["ids"])
+        lines = [
+            f"已入库文档数：{num_files}",
+            f"向量片段总数：{num_chunks}",
+        ]
+        if files:
+            preview = ", ".join(sorted(files)[:5])
+            if len(files) > 5:
+                preview += " ..."
+            lines.append(f"示例文档：{preview}")
+        else:
+            lines.append("当前尚未入库任何文档。")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"获取知识库概览失败: {e}"
 
 def chat_response(message, history):
     if not message:
@@ -76,23 +97,37 @@ def chat_response(message, history):
     
     return "", new_history
 
-with gr.Blocks(title="水声工程 RAG 知识库系统") as demo:
+custom_theme = gr.themes.Soft(
+    primary_hue="indigo",
+    secondary_hue="blue"
+)
+
+with gr.Blocks(
+    title="水声工程 RAG 知识库系统",
+    theme=custom_theme,
+) as demo:
     gr.Markdown("# 水声工程领域离线知识库系统")
     
-    with gr.Tab("文档上传"):
-        gr.Markdown("### 上传文档到知识库")
+    with gr.Tab("文档管理与入库"):
+        gr.Markdown("### 文档管理与入库")
         with gr.Row():
-            file_input = gr.File(
-                label="上传文件 (.docx, .pdf)",
-                file_types=[".docx", ".pdf"]
-            )
-            doc_type_input = gr.Radio(
-                choices=["core", "supplement"],
-                label="文档类型",
-                value="core"
-            )
-        upload_button = gr.Button("上传并入库")
-        upload_output = gr.Textbox(label="上传结果", interactive=False)
+            with gr.Column(scale=3):
+                file_input = gr.File(
+                    label="上传文件 (.docx, .pdf, .txt)",
+                    file_types=[".docx", ".pdf", ".txt"]
+                )
+                doc_type_input = gr.Radio(
+                    choices=["core", "supplement"],
+                    label="文档类型",
+                    value="core"
+                )
+                upload_button = gr.Button("📥 上传并入库", variant="primary")
+            with gr.Column(scale=2):
+                upload_output = gr.Textbox(
+                    label="入库结果反馈",
+                    interactive=False,
+                    lines=6
+                )
         
         upload_button.click(
             upload_and_process,
@@ -100,29 +135,57 @@ with gr.Blocks(title="水声工程 RAG 知识库系统") as demo:
             outputs=upload_output
         )
 
-        gr.Markdown("---")
-        gr.Markdown("### 自动同步本地文件夹")
-        gr.Markdown("将文件放入项目根目录下的 `data` 文件夹，点击下方按钮即可批量入库。")
-        sync_button = gr.Button("🔄 扫描 data 文件夹并同步")
-        sync_output = gr.Textbox(label="同步结果", interactive=False)
+        gr.Markdown("**批量同步 data 文件夹中文档**")
+        with gr.Row():
+            sync_button = gr.Button("🔄 扫描 data 文件夹并同步")
+            sync_output = gr.Textbox(label="同步结果", interactive=False, lines=6)
         
         sync_button.click(
             sync_data_folder_ui,
             inputs=[],
             outputs=sync_output
         )
+
+        gr.Markdown("**知识库概览**")
+        with gr.Row():
+            kb_button = gr.Button("📊 刷新知识库概览")
+            kb_overview = gr.Textbox(label="知识库概览", interactive=False, lines=6)
+        kb_button.click(
+            get_kb_overview,
+            inputs=[],
+            outputs=kb_overview
+        )
         
     with gr.Tab("智能问答"):
-        gr.Markdown("### 领域问答")
-        # Gradio 3.x compatibility: Do not use 'type' argument. Defaults to tuples.
-        # EXPLICITLY set type='messages' to match the error requirement?
-        # No, user said type='messages' caused TypeError.
-        # So we leave type unspecified, BUT we provide 'messages' format data because the component demands it at runtime.
-        chatbot = gr.Chatbot(label="对话记录", height=500)
+        gr.Markdown("### 领域智能问答（输入问题后按回车或点击“发送问题”）")
+        with gr.Row():
+            with gr.Column(scale=3):
+                chatbot = gr.Chatbot(label="对话记录", height=500)
+            with gr.Column(scale=2):
+                gr.Markdown("在下方输入问题，按回车或点击按钮即可发送。")
 
-        msg = gr.Textbox(label="请输入问题", placeholder="输入关于水声工程的问题...")
-        clear = gr.Button("清空对话")
-        
+        with gr.Row():
+            msg = gr.Textbox(
+                label="请输入问题",
+                placeholder="例如：多途效应对被动声纳信号处理有什么影响？",
+                lines=2
+            )
+            send = gr.Button("发送问题", variant="primary")
+            clear = gr.Button("🧹 清空对话")
+
+        gr.Markdown("#### 示例问题（点击可自动填入输入框）")
+        with gr.Row():
+            ex_q1 = "水声工程的主要研究方向有哪些？"
+            ex_q2 = "多途效应会如何影响声纳探测性能？"
+            ex_q3 = "舰船水下噪声的主要来源和特点是什么？"
+            ex1 = gr.Button("示例 1：研究方向")
+            ex2 = gr.Button("示例 2：多途效应")
+            ex3 = gr.Button("示例 3：水下噪声")
+        ex1.click(lambda q=ex_q1: q, inputs=None, outputs=msg)
+        ex2.click(lambda q=ex_q2: q, inputs=None, outputs=msg)
+        ex3.click(lambda q=ex_q3: q, inputs=None, outputs=msg)
+
+        send.click(chat_response, [msg, chatbot], [msg, chatbot])
         msg.submit(chat_response, [msg, chatbot], [msg, chatbot])
         clear.click(lambda: None, None, chatbot, queue=False)
 

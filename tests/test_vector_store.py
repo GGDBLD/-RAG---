@@ -15,16 +15,16 @@ class TestVectorStore(unittest.TestCase):
         """
         print("\n[Setup] Initializing VectorStore...")
         self.vs = VectorStoreHandler()
-        
-        # 创建一个临时的测试文件
         self.test_file = "test_doc_temp.docx"
-        # 这里我们创建一个假的文件路径，实际测试最好用真实文件
-        # 为了简单，我们手动创建一个包含特定内容的 docx
         import docx
         doc = docx.Document()
         doc.add_paragraph("这是测试文档。核心关键词是：阿尔法潜艇的静音推进系统。")
         doc.save(self.test_file)
         self.abs_test_file = os.path.abspath(self.test_file)
+        self.test_txt_file = "test_doc_temp.txt"
+        with open(self.test_txt_file, "w", encoding="utf-8") as f:
+            f.write("这是TXT测试文档。核心关键词是：贝塔声纳阵列的高灵敏度接收。")
+        self.abs_test_txt_file = os.path.abspath(self.test_txt_file)
 
     def tearDown(self):
         """
@@ -33,6 +33,8 @@ class TestVectorStore(unittest.TestCase):
         print("[Teardown] Cleaning up...")
         if os.path.exists(self.test_file):
             os.remove(self.test_file)
+        if os.path.exists(self.test_txt_file):
+            os.remove(self.test_txt_file)
         # 注意：我们不删除 ChromaDB 的数据，因为那是持久化的。
         # 真实单元测试应该用临时的 persist_directory，但这里我们直接测生产库也没关系，
         # 只要我们知道刚才加了什么。
@@ -59,6 +61,19 @@ class TestVectorStore(unittest.TestCase):
         
         # 验证内容匹配
         self.assertIn("阿尔法潜艇", first_result.page_content, "搜索结果不包含关键词")
+
+    def test_1b_txt_add_and_search(self):
+        print("Testing: Add TXT Document & Search")
+        success, msg, chunks = self.vs.add_document(self.abs_test_txt_file, "core")
+        self.assertTrue(success, f"TXT 文档添加失败: {msg}")
+        print(f"✅ TXT 添加成功，片段数: {chunks}")
+        query = "贝塔声纳阵列"
+        print(f"Testing search for: {query}")
+        results = self.vs.search(query, k=1)
+        self.assertTrue(len(results) > 0, "TXT 搜索未返回任何结果")
+        first_result = results[0]
+        print(f"✅ TXT 搜索命中: {first_result.page_content}")
+        self.assertIn("贝塔声纳阵列", first_result.page_content, "TXT 搜索结果不包含关键词")
         self.assertEqual(first_result.metadata['source'], self.test_file, "元数据 source 不匹配")
 
     def test_2_duplicate_check(self):

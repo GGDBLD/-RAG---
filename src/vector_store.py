@@ -120,8 +120,7 @@ class VectorStoreHandler:
         
         added_files = []
         
-        # Supported extensions from DocumentProcessor
-        valid_exts = ['.docx', '.pdf']
+        valid_exts = ['.docx', '.pdf', '.txt']
         
         for root, _, files in os.walk(folder_path):
             for file in files:

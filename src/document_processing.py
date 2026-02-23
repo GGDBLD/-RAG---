@@ -17,20 +17,67 @@ class DocumentProcessor:
         # It's lighter and doesn't have the dependency hell of PaddleOCR
         self.ocr = RapidOCR()
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,  # Increased from 500 to reduce fragmentation
-            chunk_overlap=150, # Increased overlap for better continuity
+            chunk_size=800,
+            chunk_overlap=150,
             separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
         )
 
     def clean_text(self, text: str) -> str:
-        """
-        Clean extra spaces and special characters
-        """
-        # Replace multiple spaces with single space
+        lines = text.splitlines()
+        cleaned_lines = []
+        for line in lines:
+            raw = line.strip()
+            if not raw:
+                continue
+            lower = raw.lower()
+            if re.fullmatch(r'[0-9ivxlcdm\.]+', lower):
+                continue
+            if re.search(r'page\s*\d+', lower):
+                continue
+            if re.search(r'https?://', lower):
+                continue
+            if '@' in lower and ' ' not in lower:
+                continue
+            if len(raw) <= 3 and all(ch in '-_=·•—~*·. ' for ch in raw):
+                continue
+            cleaned_lines.append(raw)
+        text = ' '.join(cleaned_lines)
         text = re.sub(r'\s+', ' ', text)
-        # Remove control characters but keep basic punctuation
         text = text.strip()
         return text
+
+    def is_heading_line(self, line: str) -> bool:
+        if not line:
+            return False
+        stripped = line.strip()
+        if stripped in ["摘要", "结论", "参考文献", "Abstract"]:
+            return True
+        if stripped.startswith("第") and ("章" in stripped[:10] or "节" in stripped[:10]):
+            return True
+        if re.match(r'^\d+(\.\d+)*\s+\S+', stripped):
+            return True
+        return False
+
+    def split_with_headings(self, text: str) -> List[str]:
+        lines = text.splitlines()
+        sections: List[str] = []
+        current: List[str] = []
+        for line in lines:
+            if self.is_heading_line(line) and current:
+                sections.append("\n".join(current))
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            sections.append("\n".join(current))
+        chunks: List[str] = []
+        for sec in sections:
+            cleaned = self.clean_text(sec)
+            if not cleaned:
+                continue
+            sec_chunks = self.text_splitter.split_text(cleaned)
+            chunks.extend(sec_chunks)
+        return chunks
 
     def process(self, file_path: str) -> List[Document]:
         """
@@ -49,6 +96,8 @@ class DocumentProcessor:
                 return self.process_docx(file_path, file_name)
             elif ext == '.pdf':
                 return self.process_pdf(file_path, file_name)
+            elif ext == '.txt':
+                return self.process_txt(file_path, file_name)
             else:
                 logger.warning(f"Unsupported file type: {ext}")
                 return []
@@ -65,12 +114,21 @@ class DocumentProcessor:
             full_text = []
             for para in doc.paragraphs:
                 full_text.append(para.text)
-            text = self.clean_text('\n'.join(full_text))
-            
-            chunks = self.text_splitter.split_text(text)
+            raw_text = '\n'.join(full_text)
+            chunks = self.split_with_headings(raw_text)
             return [Document(page_content=c, metadata={"source": file_name, "page": 1}) for c in chunks]
         except Exception as e:
             logger.error(f"Error processing docx {file_path}: {e}")
+            return []
+
+    def process_txt(self, file_path: str, file_name: str) -> List[Document]:
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                raw_text = f.read()
+            chunks = self.split_with_headings(raw_text)
+            return [Document(page_content=c, metadata={"source": file_name, "page": 1}) for c in chunks]
+        except Exception as e:
+            logger.error(f"Error processing txt {file_path}: {e}")
             return []
 
     def process_pdf(self, file_path: str, file_name: str) -> List[Document]:
@@ -82,7 +140,6 @@ class DocumentProcessor:
             documents = []
             is_scanned = True
             
-            # Check first few pages to decide if scanned
             check_text = ""
             for i in range(min(3, len(reader.pages))):
                 check_text += reader.pages[i].extract_text() or ""
@@ -94,17 +151,50 @@ class DocumentProcessor:
                 logger.info(f"PDF {file_name} identified as Scanned PDF. Using OCR.")
                 return self.process_scanned_pdf(file_path, file_name)
 
-            # Process Text PDF page by page
-            for i, page in enumerate(reader.pages):
-                text = page.extract_text()
-                if text:
-                    clean_text = self.clean_text(text)
-                    page_chunks = self.text_splitter.split_text(clean_text)
-                    for chunk in page_chunks:
-                        documents.append(Document(
-                            page_content=chunk, 
-                            metadata={"source": file_name, "page": i + 1}
-                        ))
+            raw_pages = []
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                raw_pages.append(text)
+
+            header_footer_candidates = {}
+            page_lines = []
+            for text in raw_pages:
+                lines = [l.strip() for l in text.splitlines()]
+                non_empty = [l for l in lines if l]
+                page_lines.append(non_empty)
+                candidates = []
+                if non_empty:
+                    candidates.append(non_empty[0])
+                if len(non_empty) >= 2:
+                    candidates.append(non_empty[1])
+                if len(non_empty) >= 3:
+                    candidates.append(non_empty[-1])
+                if len(non_empty) >= 4:
+                    candidates.append(non_empty[-2])
+                for c in candidates:
+                    header_footer_candidates[c] = header_footer_candidates.get(c, 0) + 1
+
+            repeated_lines = set()
+            min_pages_for_header = 3
+            for line, count in header_footer_candidates.items():
+                if count >= min_pages_for_header:
+                    repeated_lines.add(line)
+
+            for i, lines in enumerate(page_lines):
+                filtered = []
+                for l in lines:
+                    if l in repeated_lines:
+                        continue
+                    filtered.append(l)
+                page_text = '\n'.join(filtered)
+                if not page_text:
+                    continue
+                page_chunks = self.split_with_headings(page_text)
+                for chunk in page_chunks:
+                    documents.append(Document(
+                        page_content=chunk,
+                        metadata={"source": file_name, "page": i + 1}
+                    ))
             return documents
 
         except Exception as e:
