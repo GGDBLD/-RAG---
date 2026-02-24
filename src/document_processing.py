@@ -40,7 +40,22 @@ class DocumentProcessor:
                 continue
             if len(raw) <= 3 and all(ch in '-_=·•—~*·. ' for ch in raw):
                 continue
+            
+            # Remove lines with high density of special/garbled characters
+            # e.g., "霪藜j麓震燃懑 瀚鬻熊?掣蝌"
+            special_chars = re.findall(r'[^\u4e00-\u9fa5a-zA-Z0-9\s\.\,\，\。\、\(\)（）]', raw)
+            if len(raw) > 5 and len(special_chars) / len(raw) > 0.4:
+                continue
+                
+            # Remove isolated single characters or very short meaningless lines
+            # But keep short headings like "1. 引言"
+            if len(raw) < 4 and not re.match(r'^\d', raw) and not re.match(r'^第', raw):
+                # Check if it's likely noise
+                if not re.search(r'[\u4e00-\u9fa5]', raw): # No Chinese characters
+                    continue
+
             cleaned_lines.append(raw)
+            
         text = ' '.join(cleaned_lines)
         text = re.sub(r'\s+', ' ', text)
         text = text.strip()

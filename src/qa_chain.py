@@ -259,9 +259,36 @@ class QAChainHandler:
                     scored_docs.sort(key=lambda x: x[1], reverse=True)
 
                     selected_docs = []
+                    if scored_docs:
+                        top_score = scored_docs[0][1]
+                        
                     for doc, score in scored_docs:
+                        # 1. Absolute threshold filtering
                         if score < self.rerank_score_threshold:
                             break
+                            
+                        # 2. Relative threshold filtering (Adaptive)
+                        # If a document's score is much lower than the top result, it's likely irrelevant context
+                        # Logit difference of 3.5 roughly corresponds to significant relevance drop
+                        # User feedback: 3.5 is still too loose, many irrelevant docs are included. Tightening to 2.5
+                        if top_score - score > 2.5:
+                            logger.info(f"Skipping doc with score {score:.4f} (too far from top {top_score:.4f})")
+                            break
+                        
+                        # 3. Keyword mismatch check
+                        # If the top document contains the entity but the current one doesn't, it might be irrelevant
+                        # e.g. question about "2233", top doc has "2233", but others don't
+                        # Use simple entity extraction (alphanumeric sequences > 1 char)
+                        q_entities = re.findall(r'[a-zA-Z0-9]{2,}', search_query) 
+                        if q_entities:
+                            has_any_entity = any(e in doc.page_content for e in q_entities)
+                            # If doc doesn't contain any of the entities, be stricter
+                            if not has_any_entity:
+                                # Stricter relative threshold for non-entity docs
+                                if top_score - score > 1.5:
+                                    logger.info(f"Skipping doc {score:.4f} (missing entities {q_entities} and score too low)")
+                                    continue
+                        
                         selected_docs.append(doc)
                         if len(selected_docs) >= self.max_rerank_docs:
                             break

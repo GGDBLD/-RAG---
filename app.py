@@ -15,20 +15,45 @@ def upload_and_process(file_obj, doc_type):
     if not file_obj:
         return "请选择文件。"
     
-    # Save temp file to work with absolute path or keep it as is
-    # Gradio passes a temp file path usually
-    file_path = file_obj.name
-    
-    # Ensure we can read it. 
-    # If the user wants to keep files in a specific directory, we might move them.
-    # For now, just process the temp file.
-    
-    success, msg, num_chunks = vector_store.add_document(file_path, doc_type)
-    
-    if success:
-        return f"成功！文件名: {os.path.basename(file_path)}\n类型: {doc_type}\n新增片段数: {num_chunks}"
-    else:
-        return f"失败: {msg}"
+    try:
+        # Create temp directory for stable processing
+        temp_dir = os.path.join(os.getcwd(), "temp_uploads")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        # Determine source path
+        if hasattr(file_obj, 'name'):
+            source_path = file_obj.name
+        else:
+            source_path = str(file_obj)
+        
+        # Use original filename
+        filename = os.path.basename(source_path)
+        saved_path = os.path.join(temp_dir, filename)
+        
+        # Copy to persistent location
+        shutil.copy2(source_path, saved_path)
+        
+        # Verify file validity
+        if not os.path.exists(saved_path) or os.path.getsize(saved_path) == 0:
+            return "上传失败: 文件为空或无法读取。"
+
+        # Process the saved file
+        success, msg, num_chunks = vector_store.add_document(saved_path, doc_type)
+        
+        # Clean up
+        try:
+            if os.path.exists(saved_path):
+                os.remove(saved_path)
+        except Exception as cleanup_error:
+            print(f"Warning: Failed to cleanup temp file: {cleanup_error}")
+        
+        if success:
+            return f"成功！文件名: {filename}\n类型: {doc_type}\n新增片段数: {num_chunks}"
+        else:
+            return f"失败: {msg}"
+            
+    except Exception as e:
+        return f"处理异常: {str(e)}"
 
 def sync_data_folder_ui():
     folder_path = "data"
