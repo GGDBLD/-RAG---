@@ -59,12 +59,18 @@ class VectorStoreHandler:
             if not documents:
                 return False, "No text extracted from document", 0
 
-            # 2. Add extra metadata
+            # 2. Add extra metadata and filter empty content
+            valid_documents = []
             for doc in documents:
-                doc.metadata["doc_type"] = doc_type
+                if doc.page_content and doc.page_content.strip():
+                    doc.metadata["doc_type"] = doc_type
+                    valid_documents.append(doc)
+            
+            if not valid_documents:
+                return False, "No valid text content after filtering", 0
 
             # 3. Add to ChromaDB
-            self.vectordb.add_documents(documents)
+            self.vectordb.add_documents(valid_documents)
             # Persist is automatic in newer Chroma versions, but good to know
             
             logger.info(f"Added {len(documents)} chunks to Vector Store")

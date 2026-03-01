@@ -91,15 +91,13 @@ def get_kb_overview():
 
 def chat_response(message, history):
     if not message:
-        return "", history
+        yield "", history
+        return
     
     # Init history if needed
     if history is None:
         history = []
 
-    # Call QA Chain
-    answer, _ = qa_chain.answer_question(message, history)
-    
     # Use ChatMessage objects to satisfy strict Gradio format requirements
     new_history = []
     
@@ -118,9 +116,14 @@ def chat_response(message, history):
     
     # Append new interaction
     new_history.append(ChatMessage(role="user", content=message))
-    new_history.append(ChatMessage(role="assistant", content=answer))
+    new_history.append(ChatMessage(role="assistant", content="正在思考..."))
     
-    return "", new_history
+    yield "", new_history
+    
+    # Call QA Chain with streaming
+    for answer, _ in qa_chain.answer_question_stream(message, history):
+        new_history[-1].content = answer
+        yield "", new_history
 
 custom_theme = gr.themes.Soft(
     primary_hue="indigo",
@@ -225,4 +228,4 @@ if __name__ == "__main__":
 
     # Launch on all interfaces so it's accessible, but user said local offline.
     # 127.0.0.1 is default.
-    demo.launch(server_name="127.0.0.1", server_port=7860)
+    demo.queue().launch(server_name="127.0.0.1", server_port=7860)

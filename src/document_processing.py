@@ -225,30 +225,38 @@ class DocumentProcessor:
             documents = []
             
             for page_num in range(len(doc)):
-                page = doc[page_num]
-                # Render page to image (zoom=2 for better quality)
-                mat = fitz.Matrix(2, 2)
-                pix = page.get_pixmap(matrix=mat)
-                
-                # RapidOCR accepts bytes directly
-                img_bytes = pix.tobytes("png")
-                
-                result, _ = self.ocr(img_bytes)
-                
-                page_text = ""
-                if result:
-                    for line in result:
-                        if line and len(line) >= 2:
-                             page_text += line[1] + "\n"
-                
-                if page_text:
-                    clean_text = self.clean_text(page_text)
-                    page_chunks = self.text_splitter.split_text(clean_text)
-                    for chunk in page_chunks:
-                        documents.append(Document(
-                            page_content=chunk, 
-                            metadata={"source": file_name, "page": page_num + 1}
-                        ))
+                try:
+                    page = doc[page_num]
+                    # Render page to image (zoom=2 for better quality)
+                    mat = fitz.Matrix(2, 2)
+                    pix = page.get_pixmap(matrix=mat)
+                    
+                    # RapidOCR accepts bytes directly
+                    img_bytes = pix.tobytes("png")
+                    
+                    result, _ = self.ocr(img_bytes)
+                    
+                    page_text = ""
+                    if result:
+                        for line in result:
+                            if line and len(line) >= 2:
+                                 page_text += line[1] + "\n"
+                    
+                    if page_text:
+                        clean_text = self.clean_text(page_text)
+                        if not clean_text:
+                            continue
+                        page_chunks = self.text_splitter.split_text(clean_text)
+                        for chunk in page_chunks:
+                            if not chunk.strip():
+                                continue
+                            documents.append(Document(
+                                page_content=chunk, 
+                                metadata={"source": file_name, "page": page_num + 1}
+                            ))
+                except Exception as e:
+                    logger.warning(f"Error processing page {page_num+1} of {file_name}: {e}")
+                    continue
             
             return documents
             
