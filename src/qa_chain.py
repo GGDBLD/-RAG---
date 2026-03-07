@@ -1,5 +1,5 @@
 from typing import Tuple, List, Dict, Generator
-from langchain_community.llms import Ollama
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from src.vector_store import vector_store
@@ -27,13 +27,13 @@ class QAChainHandler:
         else:
             logger.warning(f"Reranker model not found at {self.reranker_path}. Running in retrieval-only mode.")
 
-        self.llm = Ollama(
-            base_url="http://127.0.0.1:11434",
-            model="qwen3:8b",
+        # 配置 Qwen-Plus (通义千问)
+        self.llm = ChatOpenAI(
+            api_key="sk-3034bf5ffdb84bb291bff7f41cd1d302", # 已直接配置 API KEY
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            model="qwen-plus",
             temperature=0.2,
-            # Reduce top_k for faster inference (less probability calculation)
-            top_k=20,
-            top_p=0.9
+            max_tokens=2048
         )
 
         template = """你是水声工程领域的中文问答助手。请根据【已知信息】回答【问题】。
@@ -314,6 +314,12 @@ class QAChainHandler:
                 "context": context,
                 "question": effective_question
             })
+            
+            # Handle AIMessage object from ChatOpenAI
+            if hasattr(response, 'content'):
+                response = response.content
+            else:
+                response = str(response)
 
             final_text = self.clean_answer(response)
 
@@ -354,7 +360,9 @@ class QAChainHandler:
                 "context": context,
                 "question": effective_question
             }):
-                full_response += chunk
+                # Handle both string (Ollama) and AIMessageChunk (ChatOpenAI)
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                full_response += content
                 yield full_response, []
 
             final_text = self.clean_answer(full_response)
