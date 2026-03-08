@@ -36,13 +36,19 @@ class QAChainHandler:
             max_tokens=2048
         )
 
-        template = """你是水声工程领域的中文问答助手。请根据【已知信息】回答【问题】。
+        template = """你是水声工程领域的中文问答助手。
+【当前应用场景】：
+- 应用环境：{env_context}
+- 设备类型：{device_context}
+
+请结合上述【应用场景】和下方的【已知信息】来回答【问题】。
 
 回答要求：
-1. 优先使用【已知信息】中的内容，不要凭空编造。
-2. 如果【已知信息】中几乎没有相关内容，请回答：“根据当前知识库暂时无法回答该问题。”
-3. 回答要用完整、连贯的中文句子，可以使用 1、2、3 分点说明。
-4. 控制在 3~6 句话之内，不要反复重复同一个意思。
+1. 优先使用【已知信息】中的内容。
+2. 必须针对【当前应用场景】进行回答。例如：如果是“浅海探测”，请重点考虑多途效应和浅海声传播特性；如果是“被动声纳”，请重点关注辐射噪声和检测阈。
+3. 如果【已知信息】中没有关于该场景的具体描述，请基于你的水声专业知识进行合理的推断，但要明确告知用户这是推断。
+4. 如果【已知信息】完全不相关，请回答：“根据当前知识库暂时无法回答该问题。”
+5. 回答要用完整、连贯的中文句子，条理清晰。
 
 【已知信息】：
 {context}
@@ -54,7 +60,7 @@ class QAChainHandler:
 
         self.prompt = PromptTemplate(
             template=template,
-            input_variables=["context", "question"]
+            input_variables=["context", "question", "env_context", "device_context"]
         )
 
         # Pre-compile regex for performance
@@ -338,7 +344,23 @@ class QAChainHandler:
 
     def answer_question_stream(self, question: str, chat_history: List[Tuple[str, str]] = None) -> Generator[Tuple[str, List[Dict]], None, None]:
         try:
-            docs, rule_answer, effective_question = self._get_retrieval_context(question, chat_history)
+            # 解析 Context Injection (从 question 中提取场景信息)
+            env_context = "通用/默认"
+            device_context = "未知"
+            effective_question = question
+
+            # 简单的正则提取 (对应 app.py 中的 context_prefix)
+            match_env = re.search(r"\[当前场景：(.*?)\]", question)
+            if match_env:
+                env_context = match_env.group(1)
+                effective_question = effective_question.replace(match_env.group(0), "").strip()
+            
+            match_dev = re.search(r"\[设备类型：(.*?)\]", question)
+            if match_dev:
+                device_context = match_dev.group(1)
+                effective_question = effective_question.replace(match_dev.group(0), "").strip()
+
+            docs, rule_answer, _ = self._get_retrieval_context(effective_question, chat_history)
 
             if rule_answer:
                 final_answer = rule_answer + self.format_sources(docs)
@@ -353,12 +375,14 @@ class QAChainHandler:
             context = self.format_docs(docs)
             chain = self.prompt | self.llm
 
-            logger.info("Generating answer stream...")
+            logger.info(f"Generating answer stream... (Env: {env_context}, Device: {device_context})")
             
             full_response = ""
             for chunk in chain.stream({
                 "context": context,
-                "question": effective_question
+                "question": effective_question,
+                "env_context": env_context,
+                "device_context": device_context
             }):
                 # Handle both string (Ollama) and AIMessageChunk (ChatOpenAI)
                 content = chunk.content if hasattr(chunk, 'content') else str(chunk)
