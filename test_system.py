@@ -6,18 +6,18 @@ import os
 # Ensure src is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-print("🔄 Initializing System Components...")
+print("🔄 正在初始化系统组件...")
 try:
     from src.qa_chain import qa_chain
-    print("✅ QA Chain loaded successfully.")
+    print("✅ 问答链加载成功。")
 except Exception as e:
-    print(f"❌ Failed to load QA Chain: {e}")
+    print(f"❌ 加载问答链失败: {e}")
     sys.exit(1)
 
 def test_question(question, history=None, expected_keywords=None, is_rule_based=False):
-    print(f"\n🔹 Testing Question: '{question}'")
+    print(f"\n🔹 测试问题: '{question}'")
     if history:
-        print(f"   Context: {len(history)} previous turns")
+        print(f"   上下文: 包含 {len(history)} 轮历史对话")
     
     start_time = time.time()
     try:
@@ -25,35 +25,35 @@ def test_question(question, history=None, expected_keywords=None, is_rule_based=
         answer, sources = qa_chain.answer_question(question, chat_history=history)
         duration = time.time() - start_time
         
-        print(f"   ⏱️ Duration: {duration:.2f}s")
-        print(f"   📝 Answer Length: {len(answer)} chars")
-        print(f"   📄 Sources: {len(sources)} docs")
+        print(f"   ⏱️ 耗时: {duration:.2f}秒")
+        print(f"   📝 回答长度: {len(answer)} 字符")
+        print(f"   📄 参考文档: {len(sources)} 篇")
         
         # Validation
         passed = True
         if not answer or "发生错误" in answer:
-            print(f"   ❌ Error in answer: {answer}")
+            print(f"   ❌ 回答包含错误: {answer}")
             passed = False
         
         if expected_keywords:
             missing = [k for k in expected_keywords if k not in answer]
             if missing:
-                print(f"   ⚠️ Warning: Missing keywords {missing}")
+                print(f"   ⚠️ 警告: 缺少关键词 {missing}")
         
         if is_rule_based and duration > 2.0:
-             print("   ⚠️ Warning: Rule-based answer took too long")
+             print("   ⚠️ 警告: 规则回答耗时过长")
 
         if passed:
-            print("   ✅ Test Passed")
+            print("   ✅ 测试通过")
         
         return answer, passed, duration
 
     except Exception as e:
-        print(f"   ❌ Exception: {e}")
+        print(f"   ❌ 异常: {e}")
         return None, False, 0
 
 def run_tests():
-    print("🚀 Starting Automated System Test...")
+    print("🚀 开始自动化系统测试...")
     
     total_tests = 0
     passed_tests = 0
@@ -99,12 +99,12 @@ def run_tests():
     total_duration += d4
 
     print("\n" + "="*30)
-    print(f"📊 Test Summary")
-    print(f"Total Tests: {total_tests}")
-    print(f"Passed: {passed_tests}")
-    print(f"Total Duration: {total_duration:.2f}s")
+    print(f"📊 测试总结")
+    print(f"总测试数: {total_tests}")
+    print(f"通过: {passed_tests}")
+    print(f"总耗时: {total_duration:.2f}秒")
     print("="*30)
 
 if __name__ == "__main__":
     run_tests()
-    input("\nPress Enter to exit...")
+    input("\n按回车键退出...")

@@ -248,7 +248,7 @@ def send_calc_to_chat(result, history):
 
 # ================= UI 构建 =================
 
-with gr.Blocks(title="水声工程智能分析系统", theme=gr.themes.Soft(primary_hue="indigo")) as demo:
+with gr.Blocks(title="水声工程智能分析系统") as demo:
     gr.Markdown("# 🌊 水声工程智能分析系统 (Intelligent Underwater Acoustic System)")
     
     with gr.Row():
@@ -349,17 +349,13 @@ with gr.Blocks(title="水声工程智能分析系统", theme=gr.themes.Soft(prim
                 calc_mode.change(change_mode, calc_mode, [grp_tl, grp_sonar, grp_ssp, grp_doppler, grp_ts_calc, grp_inv_rmax])
                 
                 # 计算逻辑绑定和发送结果绑定已移动到文件底部，确保组件已定义
-
+  
             # 3. 知识洞察
             with gr.Group():
                 gr.Markdown("#### 3. 知识洞察 (Insight)")
                 
-            # 3. 知识洞察
-            with gr.Group():
-                gr.Markdown("#### 3. 知识洞察 (Insight)")
-                
-                # 统计图表展示区 (替代原词云)
-                chart_image = gr.Image(label="知识库热度榜 (Top 5)", visible=False, show_label=True, height=300)
+                # 统计图表展示区 (替代原词云) - 使用 HTML 避免工具栏按钮
+                chart_image = gr.HTML(label="知识库热度榜 (Top 5)", visible=False, show_label=True)
                 
                 with gr.Accordion("📊 详细数据", open=False):
                     stat_output = gr.JSON(label="知识库规模")
@@ -367,7 +363,7 @@ with gr.Blocks(title="水声工程智能分析系统", theme=gr.themes.Soft(prim
                 
                 gr.Markdown("**🔥 热门术语 (点击查看关联问题)**")
                 with gr.Column(): # 改用垂直排列
-                    # 5个热词按钮 (Top 5) - 使用 primary 样式更醒目
+                    # 5个热词按钮 (Top 5) - 使用 primary 样式更醒目sh
                     hot_btn1 = gr.Button("1. 加载中...", variant="primary")
                     hot_btn2 = gr.Button("2. 加载中...", variant="primary")
                     hot_btn3 = gr.Button("3. 加载中...", variant="primary")
@@ -394,8 +390,17 @@ with gr.Blocks(title="水声工程智能分析系统", theme=gr.themes.Soft(prim
                         else:
                             btns.append("-")
                             
-                    # 更新图表
-                    chart_update = gr.update(value=chart_path, visible=True) if chart_path else gr.update(visible=False)
+                    # 更新图表 (以 base64 方式嵌入，避免工具栏)
+                    chart_update = gr.update(visible=False)
+                    if chart_path and os.path.exists(chart_path):
+                        try:
+                            import base64
+                            with open(chart_path, "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode("ascii")
+                            html = f'<div style="width:100%;text-align:center;"><img src="data:image/png;base64,{b64}" alt="Top 5 Ranking" style="max-width:100%;height:auto;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.15);" /></div>'
+                            chart_update = gr.update(value=html, visible=True)
+                        except Exception as _:
+                            chart_update = gr.update(visible=False)
                     
                     return stats, chart_update, btns[0], btns[1], btns[2], btns[3], btns[4]
 
@@ -540,4 +545,4 @@ if __name__ == "__main__":
     print("Startup: Scanning 'data' folder...")
     vector_store.scan_and_ingest("data")
     
-    demo.queue().launch(server_name="127.0.0.1", server_port=7860)
+    demo.queue().launch(server_name="127.0.0.1", server_port=7860, theme=gr.themes.Soft(primary_hue="indigo"))

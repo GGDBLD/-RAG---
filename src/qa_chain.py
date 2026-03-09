@@ -49,6 +49,21 @@ class QAChainHandler:
 3. 如果【已知信息】中没有关于该场景的具体描述，请基于你的水声专业知识进行合理的推断，但要明确告知用户这是推断。
 4. 如果【已知信息】完全不相关，请回答：“根据当前知识库暂时无法回答该问题。”
 5. 回答要用完整、连贯的中文句子，条理清晰。
+6. 如果【问题】属于“公式/数值计算类问题”（例如包含：计算、求、估算、单位、dB、Hz、kHz、m/s、km、log、Δf、TL、SNR 等），请进入【计算模式】输出，避免长篇解释。
+
+【计算模式】输出格式（严格遵守）：
+【核心公式】
+写出 1～2 个最关键公式（可用 LaTeX 形式）。
+
+【已知量】
+逐条列出已知参数与单位；若题目缺少关键参数（如角度、入射方向、是否同向/相向），必须明确指出缺失项。
+
+【代入计算】
+给出代入后的算式，并逐步计算到数值结果（保留必要小数位）。
+若存在不确定参数，请给出可计算的“最大/最小/范围”，并写清假设（例如取 cosθ=1 表示正对运动）。
+
+【结果】
+只给最终数值结果+单位；如给范围则写范围+单位。
 
 【已知信息】：
 {context}
@@ -79,29 +94,12 @@ class QAChainHandler:
         sources = {f"{doc.metadata.get('source', 'Unknown')} (Page {doc.metadata.get('page', 'N/A')})" for doc in docs}
         return "\n\n(信息来源: " + ", ".join(sources) + ")"
 
-    def clean_answer(self, text: str, max_chars: int = 800) -> str:
+    def clean_answer(self, text: str, max_chars: int = 2000) -> str:
         stripped = text.strip()
         if not stripped:
             return stripped
-        segments = self.split_pattern.split(stripped)
-        sentences = []
-        for seg in segments:
-            s = seg.strip()
-            if s:
-                sentences.append(s)
-        seen = set()
-        result_parts = []
-        for s in sentences:
-            key = s
-            if len(key) > 8 and key in seen:
-                continue
-            seen.add(key)
-            result_parts.append(s)
-        
-        result = "".join(result_parts)
-        if len(result) > max_chars:
-            result = result[:max_chars].rstrip()
-        return result
+        # Remove repetitive cleaning logic that might break markdown or math formulas
+        return stripped[:max_chars]
 
     def deduplicate_docs(self, docs: List[Document]) -> List[Document]:
         if not docs:
@@ -316,10 +314,17 @@ class QAChainHandler:
             chain = self.prompt | self.llm
 
             logger.info("Generating answer...")
-            response = chain.invoke({
-                "context": context,
-                "question": effective_question
-            })
+            env_context = "通用/默认"
+            device_context = "未知"
+            m_env = re.search(r"\[当前场景：(.*?)\]", effective_question)
+            if m_env:
+                env_context = m_env.group(1)
+                effective_question = effective_question.replace(m_env.group(0), "").strip()
+            m_dev = re.search(r"\[设备类型：(.*?)\]", effective_question)
+            if m_dev:
+                device_context = m_dev.group(1)
+                effective_question = effective_question.replace(m_dev.group(0), "").strip()
+            response = chain.invoke({"context": context, "question": effective_question, "env_context": env_context, "device_context": device_context})
             
             # Handle AIMessage object from ChatOpenAI
             if hasattr(response, 'content'):
@@ -327,7 +332,7 @@ class QAChainHandler:
             else:
                 response = str(response)
 
-            final_text = self.clean_answer(response)
+            final_text = self.clean_answer(response, max_chars=3000)
 
             if not final_text:
                 final_text = "抱歉，根据当前检索到的资料，我暂时无法给出准确的回答。"
@@ -389,7 +394,7 @@ class QAChainHandler:
                 full_response += content
                 yield full_response, []
 
-            final_text = self.clean_answer(full_response)
+            final_text = self.clean_answer(full_response, max_chars=3000)
 
             if not final_text:
                 final_text = "抱歉，根据当前检索到的资料，我暂时无法给出准确的回答。"
