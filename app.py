@@ -154,7 +154,7 @@ def get_related_questions(keyword):
 
 # ================= 聊天核心逻辑 =================
 
-def chat_response(message, history, scene_env, sonar_type):
+def chat_response(message, history, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal):
     """
     处理用户提问，结合侧边栏的场景参数
     """
@@ -173,6 +173,17 @@ def chat_response(message, history, scene_env, sonar_type):
         context_prefix += f"[当前场景：{scene_env}] "
     if sonar_type:
         context_prefix += f"[设备类型：{sonar_type}] "
+    # 扩展注入：海况、海底、声速剖面、频段、任务
+    if sea_state:
+        context_prefix += f"[海况：{sea_state}] "
+    if bottom_type:
+        context_prefix += f"[海底：{bottom_type}] "
+    if ssp_type:
+        context_prefix += f"[声速剖面：{ssp_type}] "
+    if freq_band:
+        context_prefix += f"[频段：{freq_band}] "
+    if task_goal:
+        context_prefix += f"[任务：{task_goal}] "
         
     # 将场景信息传给 QA Chain (需要修改 qa_chain.py 的接口，或者直接拼接到 question)
     # 暂时拼接到 question，让 LLM 感知
@@ -248,8 +259,8 @@ def send_calc_to_chat(result, history):
 
 # ================= UI 构建 =================
 
-with gr.Blocks(title="水声工程智能分析系统") as demo:
-    gr.Markdown("# 🌊 水声工程智能分析系统 (Intelligent Underwater Acoustic System)")
+with gr.Blocks(title="水声工程智能问答系统") as demo:
+    gr.Markdown("# 🌊 水声工程智能问答系统")
     
     with gr.Row():
         # === 左侧边栏 (Sidebar) ===
@@ -269,6 +280,51 @@ with gr.Blocks(title="水声工程智能分析系统") as demo:
                     value="被动声纳",
                     label="声纳类型"
                 )
+                with gr.Row():
+                    sea_state = gr.Dropdown(choices=[str(i) for i in range(0,7)], value="3", label="海况等级 (Sea State)")
+                    bottom_type = gr.Dropdown(choices=["泥", "砂", "岩"], value="砂", label="海底类型")
+                with gr.Row():
+                    ssp_type = gr.Dropdown(choices=["表面声道", "中层极小", "汇聚区"], value="中层极小", label="声速剖面")
+                    freq_band = gr.Dropdown(choices=["低频", "中频", "高频"], value="中频", label="频段")
+                task_goal = gr.Dropdown(choices=["侦察", "跟踪", "定位", "通信"], value="侦察", label="任务目标")
+                preset = gr.Dropdown(
+                    choices=["浅海被动侦察（中频/线阵/SS=3/砂底）", "深海主动搜索（高频/面阵/汇聚区）", "港湾通信（低频/SS=2/泥底）"],
+                    value=None,
+                    label="场景模板"
+                )
+                def apply_preset(p):
+                    if p == "浅海被动侦察（中频/线阵/SS=3/砂底）":
+                        return {
+                            scene_env: gr.update(value="浅海探测 (多途严重)"),
+                            sonar_type: gr.update(value="被动声纳"),
+                            sea_state: gr.update(value="3"),
+                            bottom_type: gr.update(value="砂"),
+                            ssp_type: gr.update(value="中层极小"),
+                            freq_band: gr.update(value="中频"),
+                            task_goal: gr.update(value="侦察"),
+                        }
+                    if p == "深海主动搜索（高频/面阵/汇聚区）":
+                        return {
+                            scene_env: gr.update(value="深海探测 (汇聚区)"),
+                            sonar_type: gr.update(value="主动声纳"),
+                            sea_state: gr.update(value="4"),
+                            bottom_type: gr.update(value="岩"),
+                            ssp_type: gr.update(value="汇聚区"),
+                            freq_band: gr.update(value="高频"),
+                            task_goal: gr.update(value="定位"),
+                        }
+                    if p == "港湾通信（低频/SS=2/泥底）":
+                        return {
+                            scene_env: gr.update(value="通用/默认"),
+                            sonar_type: gr.update(value="被动声纳"),
+                            sea_state: gr.update(value="2"),
+                            bottom_type: gr.update(value="泥"),
+                            ssp_type: gr.update(value="表面声道"),
+                            freq_band: gr.update(value="低频"),
+                            task_goal: gr.update(value="通信"),
+                        }
+                    return {}
+                preset.change(apply_preset, preset, [scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal])
             
             # 2. 水声计算器
             with gr.Group():
@@ -514,8 +570,8 @@ with gr.Blocks(title="水声工程智能分析系统") as demo:
     # 必须放在所有组件定义之后，防止 NameError
 
     # 1. 聊天事件
-    send.click(chat_response, [msg, chatbot, scene_env, sonar_type], [msg, chatbot])
-    msg.submit(chat_response, [msg, chatbot, scene_env, sonar_type], [msg, chatbot])
+    send.click(chat_response, [msg, chatbot, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal], [msg, chatbot])
+    msg.submit(chat_response, [msg, chatbot, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal], [msg, chatbot])
     clear.click(lambda: [], None, chatbot, queue=False)
 
     # 2. 计算器事件

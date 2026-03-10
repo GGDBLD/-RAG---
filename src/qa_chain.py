@@ -8,6 +8,7 @@ import os
 import re
 from sentence_transformers import CrossEncoder
 from functools import lru_cache
+from src.acoustic_tools import AcousticCalculator
 
 logger = setup_logger('qa_chain')
 
@@ -48,22 +49,24 @@ class QAChainHandler:
 2. 必须针对【当前应用场景】进行回答。例如：如果是“浅海探测”，请重点考虑多途效应和浅海声传播特性；如果是“被动声纳”，请重点关注辐射噪声和检测阈。
 3. 如果【已知信息】中没有关于该场景的具体描述，请基于你的水声专业知识进行合理的推断，但要明确告知用户这是推断。
 4. 如果【已知信息】完全不相关，请回答：“根据当前知识库暂时无法回答该问题。”
-5. 回答要用完整、连贯的中文句子，条理清晰。
-6. 如果【问题】属于“公式/数值计算类问题”（例如包含：计算、求、估算、单位、dB、Hz、kHz、m/s、km、log、Δf、TL、SNR 等），请进入【计算模式】输出，避免长篇解释。
+5. 回答要简洁直接：先给结论，再给必要步骤或要点；不要写长篇背景综述。
+6. 禁止写“根据……得知/结合片段/如上所述/由文献可知”等冗余套话；不要引用“片段编号”或复述【已知信息】原文。
+7. 默认输出不超过 10 行，除非用户明确要求展开。
+8. 如果【问题】属于“公式/数值计算类问题”（例如包含：计算、求、估算、单位、dB、Hz、kHz、m/s、km、log、Δf、TL、SNR 等），请进入【计算模式】输出，避免长篇解释。
 
 【计算模式】输出格式（严格遵守）：
-【核心公式】
-写出 1～2 个最关键公式（可用 LaTeX 形式）。
+【结果】
+只给最终数值结果+单位；如给范围则写范围+单位。
 
 【已知量】
 逐条列出已知参数与单位；若题目缺少关键参数（如角度、入射方向、是否同向/相向），必须明确指出缺失项。
 
+【核心公式】
+写出 1～2 个最关键公式（可用 LaTeX 形式）。
+
 【代入计算】
 给出代入后的算式，并逐步计算到数值结果（保留必要小数位）。
 若存在不确定参数，请给出可计算的“最大/最小/范围”，并写清假设（例如取 cosθ=1 表示正对运动）。
-
-【结果】
-只给最终数值结果+单位；如给范围则写范围+单位。
 
 【已知信息】：
 {context}
@@ -83,8 +86,7 @@ class QAChainHandler:
         self.split_pattern = re.compile(r'(?<=[。！？!?])')
 
     def format_docs(self, docs: List[Document]) -> str:
-        # Use generator expression for faster string joining
-        return "\n\n".join(f"片段{i+1}: {doc.page_content.replace('\n', ' ')}" for i, doc in enumerate(docs))
+        return "\n\n".join(doc.page_content.replace('\n', ' ') for doc in docs)
 
     def format_sources(self, docs: List[Document]) -> str:
         if not docs:
@@ -222,6 +224,54 @@ class QAChainHandler:
                 history_context = "\n".join(history_context_parts)
                 # Simple concatenation is faster than LLM condensation
                 search_query = f"{history_context}\nHuman: {question}"[-512:] # Truncate to avoid token limits
+        
+        # 2. Query Boost from scene tags
+        boost_terms = []
+        m_env = re.search(r"\[当前场景：(.*?)\]", question)
+        m_dev = re.search(r"\[设备类型：(.*?)\]", question)
+        m_ss = re.search(r"\[海况：(.*?)\]", question)
+        m_bt = re.search(r"\[海底：(.*?)\]", question)
+        m_sp = re.search(r"\[声速剖面：(.*?)\]", question)
+        m_fb = re.search(r"\[频段：(.*?)\]", question)
+        m_task = re.search(r"\[任务：(.*?)\]", question)
+        if m_env:
+            v = m_env.group(1)
+            if "浅海" in v:
+                boost_terms += ["浅海", "多途", "混响", "海底反射"]
+            if "深海" in v or "汇聚区" in v:
+                boost_terms += ["深海", "汇聚区", "声道", "SOFAR"]
+            if "冰下" in v:
+                boost_terms += ["冰下", "界面散射"]
+        if m_dev:
+            v = m_dev.group(1)
+            if "被动" in v:
+                boost_terms += ["被动", "辐射噪声", "阵列增益", "检测阈"]
+            if "主动" in v:
+                boost_terms += ["主动", "目标强度", "混响", "回波"]
+        if m_ss:
+            boost_terms += ["海况", str(m_ss.group(1))]
+        if m_bt:
+            v = m_bt.group(1)
+            if v in ["泥", "砂", "岩"]:
+                boost_terms += [v + "底", "底反射", "底散射"]
+        if m_sp:
+            v = m_sp.group(1)
+            if "表面声道" in v:
+                boost_terms += ["表面声道", "声速剖面"]
+            if "中层极小" in v:
+                boost_terms += ["声速极小", "折射", "声速剖面"]
+            if "汇聚区" in v:
+                boost_terms += ["汇聚区", "声道", "SOFAR"]
+        if m_fb:
+            v = m_fb.group(1)
+            if v in ["低频", "中频", "高频"]:
+                boost_terms += [v, "吸收", "指向性"]
+        if m_task:
+            v = m_task.group(1)
+            boost_terms += [v]
+        if boost_terms:
+            prefix = " ".join(boost_terms[:12])
+            search_query = (prefix + " " + search_query)[-768:]
 
         # Reduce initial retrieval count to speed up reranking
         initial_k = 10 # Reduced from default/larger value
@@ -235,7 +285,22 @@ class QAChainHandler:
                 doc_contents = tuple(doc.page_content for doc in candidate_docs)
                 scores = self._cached_rerank(search_query, doc_contents)
                 
-                scored_docs = list(zip(candidate_docs, scores))
+                scored_docs = []
+                for i, doc in enumerate(candidate_docs):
+                    s = scores[i] if i < len(scores) else 0.0
+                    bonus = 0.0
+                    if boost_terms:
+                        if any(term for term in boost_terms if term and term in doc.page_content):
+                            bonus = 0.05 if s >= 0 and s <= 1.0 else 0.5
+                        # Additional bonus if metadata matches scene tags
+                        try:
+                            meta = getattr(doc, "metadata", {}) or {}
+                            meta_vals = [str(v) for k, v in meta.items() if k in ["env","device","band","ssp_type","bottom_type","task","array_type"] and v]
+                            if meta_vals and any(mv in boost_terms for mv in meta_vals):
+                                bonus += (0.05 if s >= 0 and s <= 1.0 else 0.5)
+                        except Exception:
+                            pass
+                    scored_docs.append((doc, s + bonus))
                 scored_docs.sort(key=lambda x: x[1], reverse=True)
 
                 selected_docs = []
@@ -302,6 +367,14 @@ class QAChainHandler:
         try:
             docs, rule_answer, effective_question = self._get_retrieval_context(question, chat_history)
 
+            # Rule-based: DI收益（避免臆造比例）
+            if not rule_answer:
+                if "指向性指数" in effective_question or "DI" in effective_question:
+                    rule_answer = (
+                        "结论：DI 每增加 x dB，等效 SNR 增加 x dB；作用距离提升幅度取决于传播损失与噪声模型，"
+                        "需具体参数方可量化。建议先给出 SL、TL、NL、DI、DT，再按声纳方程评估。"
+                    )
+
             if rule_answer:
                 final_answer = rule_answer + self.format_sources(docs)
                 source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]
@@ -309,6 +382,13 @@ class QAChainHandler:
 
             if not docs:
                 return "抱歉，知识库中没有找到相关信息。", []
+
+            # Calculation intent router: prefer deterministic calculator output
+            calc_text = self._try_calculation_answer(effective_question)
+            if calc_text:
+                final_answer = calc_text + self.format_sources(docs)
+                source_list = [{"source": d.metadata.get('source'), "page": d.metadata.get('page'), "content": d.page_content} for d in docs]
+                return final_answer, source_list
 
             context = self.format_docs(docs)
             chain = self.prompt | self.llm
@@ -365,7 +445,21 @@ class QAChainHandler:
                 device_context = match_dev.group(1)
                 effective_question = effective_question.replace(match_dev.group(0), "").strip()
 
-            docs, rule_answer, _ = self._get_retrieval_context(effective_question, chat_history)
+            # 计算类与部分高频结论：优先走确定性路径，保证与计算器一致
+            if "指向性指数" in effective_question or "DI" in effective_question:
+                yield (
+                    "结论：DI 每增加 x dB，等效 SNR 增加 x dB；作用距离提升幅度取决于传播损失与噪声模型，"
+                    "需具体参数方可量化。建议给出 SL、TL、NL、DI、DT，再按声纳方程评估。",
+                    []
+                )
+                return
+
+            calc_text = self._try_calculation_answer(effective_question)
+            if calc_text:
+                yield calc_text, []
+                return
+
+            docs, rule_answer, _ = self._get_retrieval_context(question, chat_history)
 
             if rule_answer:
                 final_answer = rule_answer + self.format_sources(docs)
@@ -409,5 +503,92 @@ class QAChainHandler:
             logger.error(f"Error in QA chain stream: {e}")
             yield f"发生错误: {str(e)}", []
 
+    def _try_calculation_answer(self, q: str) -> str:
+        """Parse calculation intent from question and return concise result using AcousticCalculator"""
+        try:
+            text = q
+            # Transmission Loss
+            if ("计算传播损失" in text) or (("传播损失" in text or "TL" in text) and ("距离" in text)):
+                import re
+                r_km = None; f_khz = 0.0; tl_type = "spherical"
+                # distance: km or m
+                m_r_km = re.search(r"距离\s*([0-9]+(?:\.[0-9]+)?)\s*km", text)
+                m_r_m = re.search(r"距离\s*([0-9]+(?:\.[0-9]+)?)\s*m(?![a-zA-Z])", text)
+                if m_r_km:
+                    r_km = float(m_r_km.group(1))
+                elif m_r_m:
+                    r_km = float(m_r_m.group(1)) / 1000.0
+                # frequency: kHz or Hz
+                m_f_khz = re.search(r"频率\s*([0-9]+(?:\.[0-9]+)?)\s*kHz", text)
+                m_f_hz = re.search(r"频率\s*([0-9]+(?:\.[0-9]+)?)\s*Hz", text)
+                if m_f_khz:
+                    f_khz = float(m_f_khz.group(1))
+                elif m_f_hz:
+                    f_khz = float(m_f_hz.group(1)) / 1000.0
+                if "球面扩展" in text: tl_type = "spherical"
+                elif "柱面扩展" in text: tl_type = "cylindrical"
+                elif "混合扩展" in text or "hybrid" in text: tl_type = "hybrid"
+                if r_km:
+                    return AcousticCalculator.calc_transmission_loss(r_km, f_khz, tl_type)
+                if "计算传播损失" in text:
+                    return "需要参数：距离 (km)，可选频率 (kHz) 与扩展类型（球面/柱面/混合）。"
+                return None
+            # Sonar Equation
+            if ("声纳方程" in text and "计算" in text) or ("SNR" in text and "计算" in text):
+                import re
+                is_active = "主动" in text
+                def pick(pattern):
+                    m = re.search(pattern, text)
+                    return float(m.group(1)) if m else None
+                sl = pick(r"SL\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*dB")
+                tl = pick(r"TL\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*dB")
+                nl = pick(r"NL\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*dB")
+                di = pick(r"DI\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*dB")
+                ts = pick(r"TS\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*dB") or 0.0
+                if sl is not None and tl is not None and nl is not None and di is not None:
+                    return AcousticCalculator.calc_sonar_equation(sl, tl, nl, di, ts, is_active)
+                if "计算" in text:
+                    return "需要参数：SL、TL、NL、DI（dB），主动模式下可选 TS（dB）。"
+                return None
+            # Doppler
+            if "多普勒" in text:
+                import re
+                vs = None; vt = None; f0 = None
+                m_vs_kn = re.search(r"声源速度\s*([0-9]+(?:\.[0-9]+)?)\s*节", text)
+                m_vt_kn = re.search(r"目标速度\s*([0-9]+(?:\.[0-9]+)?)\s*节", text)
+                m_vs_ms = re.search(r"声源速度\s*([0-9]+(?:\.[0-9]+)?)\s*m/s", text)
+                m_vt_ms = re.search(r"目标速度\s*([0-9]+(?:\.[0-9]+)?)\s*m/s", text)
+                m_f0 = re.search(r"中心频率\s*([0-9]+(?:\.[0-9]+)?)\s*Hz", text)
+                KNOT_PER_MS = 1.0 / 0.51444
+                if m_vs_kn: vs = float(m_vs_kn.group(1))
+                elif m_vs_ms: vs = float(m_vs_ms.group(1)) * KNOT_PER_MS
+                if m_vt_kn: vt = float(m_vt_kn.group(1))
+                elif m_vt_ms: vt = float(m_vt_ms.group(1)) * KNOT_PER_MS
+                if m_f0: f0 = float(m_f0.group(1))
+                if vs is not None and vt is not None and f0 is not None:
+                    return AcousticCalculator.calc_doppler_shift(vs, vt, f0)
+                if "计算" in text:
+                    return "需要参数：声源速度 (节)、目标速度 (节)、中心频率 (Hz)。"
+                return None
+            # Inverse Max Range
+            if "最大探测距离" in text or "逆向求解" in text:
+                import re
+                fom = None; f_khz = 1.0; t = "spherical"
+                m_fom = re.search(r"FOM\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*dB", text)
+                m_fk = re.search(r"频率\s*([0-9]+(?:\.[0-9]+)?)\s*kHz", text)
+                m_fh = re.search(r"频率\s*([0-9]+(?:\.[0-9]+)?)\s*Hz", text)
+                if m_fom: fom = float(m_fom.group(1))
+                if m_fk: f_khz = float(m_fk.group(1))
+                elif m_fh: f_khz = float(m_fh.group(1)) / 1000.0
+                if "柱面扩展" in text: t = "cylindrical"
+                elif "混合扩展" in text or "hybrid" in text: t = "hybrid"
+                if fom is not None:
+                    return AcousticCalculator.solve_max_range(fom, f_khz, t)
+                if "逆向求解" in text or "最大探测距离" in text:
+                    return "需要参数：FOM（dB），可选频率 (kHz) 与扩展类型。"
+                return None
+        except Exception:
+            return None
+        return None
 # Singleton
 qa_chain = QAChainHandler()

@@ -64,6 +64,61 @@ class VectorStoreHandler:
             for doc in documents:
                 if doc.page_content and doc.page_content.strip():
                     doc.metadata["doc_type"] = doc_type
+                    # Lightweight keyword-based tagging (trial)
+                    fname = os.path.basename(file_path)
+                    low = fname.lower()
+                    cn = fname
+                    # env
+                    if "深海" in cn or "deep" in low:
+                        doc.metadata["env"] = "深海"
+                    elif "浅海" in cn or "shallow" in low:
+                        doc.metadata["env"] = "浅海"
+                    elif "港湾" in cn or "近岸" in cn or "harbor" in low:
+                        doc.metadata["env"] = "港湾"
+                    elif "冰下" in cn or "ice" in low:
+                        doc.metadata["env"] = "冰下"
+                    # device
+                    if "主动" in cn or "active" in low:
+                        doc.metadata["device"] = "主动"
+                    elif "被动" in cn or "passive" in low:
+                        doc.metadata["device"] = "被动"
+                    # band
+                    if "低频" in cn or "low-frequency" in low:
+                        doc.metadata["band"] = "低频"
+                    elif "中频" in cn or "mid-frequency" in low or "中频段" in cn:
+                        doc.metadata["band"] = "中频"
+                    elif "高频" in cn or "high-frequency" in low:
+                        doc.metadata["band"] = "高频"
+                    # ssp_type
+                    if "汇聚区" in cn or "sofar" in low or "声道" in cn:
+                        doc.metadata["ssp_type"] = "汇聚区"
+                    elif "表面声道" in cn:
+                        doc.metadata["ssp_type"] = "表面声道"
+                    elif "中层极小" in cn:
+                        doc.metadata["ssp_type"] = "中层极小"
+                    # bottom_type
+                    if "泥" in cn or "mud" in low:
+                        doc.metadata["bottom_type"] = "泥"
+                    elif "砂" in cn or "sand" in low:
+                        doc.metadata["bottom_type"] = "砂"
+                    elif "岩" in cn or "rock" in low:
+                        doc.metadata["bottom_type"] = "岩"
+                    # task
+                    if "侦察" in cn or "recon" in low:
+                        doc.metadata["task"] = "侦察"
+                    elif "跟踪" in cn or "track" in low:
+                        doc.metadata["task"] = "跟踪"
+                    elif "定位" in cn or "locat" in low:
+                        doc.metadata["task"] = "定位"
+                    elif "通信" in cn or "commun" in low:
+                        doc.metadata["task"] = "通信"
+                    # array_type
+                    if "线阵" in cn or "line array" in low:
+                        doc.metadata["array_type"] = "线阵"
+                    elif "面阵" in cn or "planar array" in low:
+                        doc.metadata["array_type"] = "面阵"
+                    elif "拖曳阵" in cn or "towed array" in low:
+                        doc.metadata["array_type"] = "拖曳阵"
                     valid_documents.append(doc)
             
             if not valid_documents:
