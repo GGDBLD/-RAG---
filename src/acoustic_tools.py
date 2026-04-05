@@ -234,3 +234,99 @@ class AcousticCalculator:
         result += f"- 依据: FOM = TL = {fom} dB\n"
         result += f"- 模型: {k}logR + {alpha:.4f}R (频率 {f_khz}kHz)"
         return result
+
+    @staticmethod
+    def estimate_ambient_noise(sea_state: int, f_khz: float, shipping_traffic: int = 2) -> str:
+        """
+        估算海洋环境噪声级 (简化版 Wenz 曲线)
+        :param sea_state: 海况等级 (0-6)
+        :param f_khz: 频率 (kHz)
+        :param shipping_traffic: 航运密度 (1: 低, 2: 中, 3: 高)
+        """
+        f_hz = f_khz * 1000.0
+        if f_hz <= 0:
+            return "错误: 频率必须大于0"
+            
+        nl_total = 0.0
+        
+        # 1. 湍流噪声 (Turbulence) - 低频 < 10Hz
+        nl_turb = 106 - 30 * math.log10(f_hz) if f_hz > 0 else 0
+        
+        # 2. 航运噪声 (Shipping) - 10Hz 到 1000Hz
+        traffic_base = {1: 60, 2: 70, 3: 80}.get(shipping_traffic, 70)
+        nl_ship = traffic_base - 20 * math.log10(f_hz / 100) if f_hz > 0 else 0
+        
+        # 3. 风浪噪声 (Wind/Wave) - 100Hz 到 100kHz
+        ss_base = 50 + 7.5 * math.sqrt(sea_state)
+        nl_wind = ss_base - 17 * math.log10(f_hz / 1000) if f_hz > 0 else 0
+        
+        # 4. 热噪声 (Thermal) - > 100kHz
+        nl_thermal = -15 + 20 * math.log10(f_hz) if f_hz > 0 else 0
+        
+        # 根据 Wenz 曲线简化区间截断
+        intensities = [
+            10**(nl_turb/10) if 1 <= f_hz < 100 else 0,
+            10**(nl_ship/10) if 10 <= f_hz < 10000 else 0,
+            10**(nl_wind/10) if 100 <= f_hz < 100000 else 0,
+            10**(nl_thermal/10) if f_hz >= 50000 else 0
+        ]
+        
+        total_intensity = sum(intensities)
+        if total_intensity > 0:
+            nl_total = 10 * math.log10(total_intensity)
+        else:
+            nl_total = 0.0
+
+        result = f"估算环境噪声级 NL ≈ {nl_total:.1f} dB (re 1μPa²/Hz)\n"
+        result += f"- 参数: 频率 {f_khz}kHz, 海况 {sea_state}, 航运密度等级 {shipping_traffic}\n"
+        
+        # 推断主要噪声源
+        result += "- 主要噪声源: "
+        if 10 < f_hz < 500 and nl_ship > nl_wind: 
+            result += "航运噪声为主"
+        elif 500 <= f_hz < 50000: 
+            result += "风浪噪声为主"
+        elif f_hz >= 50000: 
+            result += "分子热运动为主"
+        else: 
+            result += "低频湍流或综合背景"
+            
+        return result
+
+    @staticmethod
+    def calc_array_directivity(array_type: str, num_elements: int, spacing_lambda: float) -> str:
+        """
+        估算阵列指向性指数(DI)与波束宽度
+        :param array_type: 阵列类型 ('line', 'planar')
+        :param num_elements: 阵元总数
+        :param spacing_lambda: 阵元间距(以波长为单位，如 0.5)
+        """
+        if num_elements <= 0 or spacing_lambda <= 0:
+            return "错误: 阵元数和间距必须大于0"
+            
+        di = 0.0
+        beamwidth = 0.0
+        desc = ""
+        
+        if array_type == "line":
+            # 直线阵 (侧射) 近似: DI = 10log(2 * N * d/lambda)
+            di = 10 * math.log10(2 * num_elements * spacing_lambda)
+            # 波束宽度 (度) ≈ 50.8 / (N * d/lambda)
+            beamwidth = 50.8 / (num_elements * spacing_lambda)
+            desc = "均匀直线阵 (侧射)"
+        elif array_type == "planar":
+            # 平面阵 (假设方形): DI = 10log( 4pi A / lambda^2 ) ≈ 10log( 4pi N d^2/lambda^2 )
+            di = 10 * math.log10(4 * math.pi * num_elements * (spacing_lambda**2))
+            # 波束宽度近似 (按边长)
+            side_elements = math.sqrt(num_elements)
+            beamwidth = 50.8 / (side_elements * spacing_lambda)
+            desc = "均匀方形平面阵 (侧射)"
+        else:
+            return "未知阵列类型"
+            
+        result = f"阵列性能估算:\n"
+        result += f"- 指向性指数 DI ≈ {di:.1f} dB\n"
+        result += f"- 主瓣宽度 (3dB) ≈ {beamwidth:.1f}°\n"
+        result += f"- 阵列模型: {desc} (阵元数 N={int(num_elements)}, 间距 d={spacing_lambda}λ)"
+        return result
+

@@ -4,7 +4,7 @@ import shutil
 from src.vector_store import vector_store
 from src.qa_chain import qa_chain
 from src.acoustic_tools import AcousticCalculator
-from src.utils import extract_top_keywords, generate_knowledge_charts
+from src.utils import extract_top_keywords, generate_knowledge_charts, generate_tl_range_plot
 
 # ================= 辅助函数 =================
 
@@ -154,7 +154,7 @@ def get_related_questions(keyword):
 
 # ================= 聊天核心逻辑 =================
 
-def chat_response(message, history, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal):
+def chat_response(message, history, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal, array_type):
     """
     处理用户提问，结合侧边栏的场景参数
     """
@@ -184,6 +184,8 @@ def chat_response(message, history, scene_env, sonar_type, sea_state, bottom_typ
         context_prefix += f"[频段：{freq_band}] "
     if task_goal:
         context_prefix += f"[任务：{task_goal}] "
+    if array_type:
+        context_prefix += f"[阵列：{array_type}] "
         
     # 将场景信息传给 QA Chain (需要修改 qa_chain.py 的接口，或者直接拼接到 question)
     # 暂时拼接到 question，让 LLM 感知
@@ -215,7 +217,7 @@ def chat_response(message, history, scene_env, sonar_type, sea_state, bottom_typ
 
 # ================= 计算器逻辑 =================
 
-def run_calculator(calc_mode, r, f, tl_type, sl, tl, nl, di, ts, active_mode, t, s, d, v_s, v_t, f0, ts_type, ts_r, ts_l, inv_fom, inv_f, inv_type):
+def run_calculator(calc_mode, r, f, tl_type, sl, tl, nl, di, ts, active_mode, t, s, d, v_s, v_t, f0, ts_type, ts_r, ts_l, inv_fom, inv_f, inv_type, wenz_ss, wenz_f, wenz_traffic, array_type_sel, array_n, array_d):
     """
     根据选择的计算模式调用 AcousticCalculator
     """
@@ -235,6 +237,10 @@ def run_calculator(calc_mode, r, f, tl_type, sl, tl, nl, di, ts, active_mode, t,
             return AcousticCalculator.estimate_target_strength(ts_type, float(ts_r), float(ts_l))
         elif calc_mode == "逆向求解: 最大探测距离 (R_max)":
             return AcousticCalculator.solve_max_range(float(inv_fom), float(inv_f), inv_type)
+        elif calc_mode == "环境噪声估算 (Wenz)":
+            return AcousticCalculator.estimate_ambient_noise(int(wenz_ss), float(wenz_f), int(wenz_traffic))
+        elif calc_mode == "阵列性能估算 (DI)":
+            return AcousticCalculator.calc_array_directivity(array_type_sel, int(array_n), float(array_d))
         else:
             return "未知模式"
     except ValueError:
@@ -261,323 +267,258 @@ def send_calc_to_chat(result, history):
 
 with gr.Blocks(title="水声工程智能问答系统") as demo:
     gr.Markdown("# 🌊 水声工程智能问答系统")
+
+    with gr.Tabs(selected="qa") as top_tabs:
+        with gr.Tab("问答系统", id="qa"):
+            with gr.Row():
+                with gr.Column(scale=1, min_width=300, variant="panel"):
+                    gr.Markdown("### 🛠️ 专业工具箱")
+                    sidebar_menu = gr.Radio(choices=["场景设定", "水声计算器", "知识洞察"], value="场景设定", label="菜单")
+                    def toggle_menu(menu):
+                        return {
+                            grp_scene: gr.update(visible=(menu=="场景设定")),
+                            grp_calc: gr.update(visible=(menu=="水声计算器")),
+                            grp_insight: gr.update(visible=(menu=="知识洞察")),
+                        }
+                    
+                    with gr.Group() as grp_scene:
+                        gr.Markdown("#### 1. 场景设定 (Context)")
+                        scene_env = gr.Dropdown(choices=["通用/默认", "浅海探测 (多途严重)", "深海探测 (汇聚区)", "极地冰下"], value="通用/默认", label="应用环境")
+                        sonar_type = gr.Radio(choices=["主动声纳", "被动声纳"], value="被动声纳", label="声纳类型")
+                        with gr.Row():
+                            sea_state = gr.Dropdown(choices=[str(i) for i in range(0,7)], value="3", label="海况等级 (Sea State)")
+                            bottom_type = gr.Dropdown(choices=["泥", "砂", "岩"], value="砂", label="海底类型")
+                        with gr.Row():
+                            ssp_type = gr.Dropdown(choices=["表面声道", "中层极小", "汇聚区"], value="中层极小", label="声速剖面")
+                            freq_band = gr.Dropdown(choices=["低频", "中频", "高频"], value="中频", label="频段")
+                        array_type = gr.Dropdown(choices=["线阵", "面阵", "拖曳阵"], value="线阵", label="阵列类型")
+                        task_goal = gr.Dropdown(choices=["侦察", "跟踪", "定位", "通信"], value="侦察", label="任务目标")
+                        scene_summary = gr.Textbox(label="场景摘要", lines=3, interactive=False)
+                        preset = gr.Dropdown(choices=["浅海被动侦察（中频/线阵/SS=3/砂底）", "深海主动搜索（高频/面阵/汇聚区）", "港湾通信（低频/SS=2/泥底）"], value=None, label="场景模板")
+                        def apply_preset(p):
+                            if p == "浅海被动侦察（中频/线阵/SS=3/砂底）":
+                                return {scene_env: gr.update(value="浅海探测 (多途严重)"), sonar_type: gr.update(value="被动声纳"), sea_state: gr.update(value="3"), bottom_type: gr.update(value="砂"), ssp_type: gr.update(value="中层极小"), freq_band: gr.update(value="中频"), array_type: gr.update(value="线阵"), task_goal: gr.update(value="侦察")}
+                            if p == "深海主动搜索（高频/面阵/汇聚区）":
+                                return {scene_env: gr.update(value="深海探测 (汇聚区)"), sonar_type: gr.update(value="主动声纳"), sea_state: gr.update(value="4"), bottom_type: gr.update(value="岩"), ssp_type: gr.update(value="汇聚区"), freq_band: gr.update(value="高频"), array_type: gr.update(value="面阵"), task_goal: gr.update(value="定位")}
+                            if p == "港湾通信（低频/SS=2/泥底）":
+                                return {scene_env: gr.update(value="通用/默认"), sonar_type: gr.update(value="被动声纳"), sea_state: gr.update(value="2"), bottom_type: gr.update(value="泥"), ssp_type: gr.update(value="表面声道"), freq_band: gr.update(value="低频"), array_type: gr.update(value="线阵"), task_goal: gr.update(value="通信")}
+                            return {}
+                        preset.change(apply_preset, preset, [scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, array_type, task_goal])
     
-    with gr.Row():
-        # === 左侧边栏 (Sidebar) ===
-        with gr.Column(scale=1, min_width=300, variant="panel"):
-            gr.Markdown("### 🛠️ 专业工具箱")
-            
-            # 1. 场景设定
-            with gr.Group():
-                gr.Markdown("#### 1. 场景设定 (Context)")
-                scene_env = gr.Dropdown(
-                    choices=["通用/默认", "浅海探测 (多途严重)", "深海探测 (汇聚区)", "极地冰下"],
-                    value="通用/默认",
-                    label="应用环境"
-                )
-                sonar_type = gr.Radio(
-                    choices=["主动声纳", "被动声纳"],
-                    value="被动声纳",
-                    label="声纳类型"
-                )
-                with gr.Row():
-                    sea_state = gr.Dropdown(choices=[str(i) for i in range(0,7)], value="3", label="海况等级 (Sea State)")
-                    bottom_type = gr.Dropdown(choices=["泥", "砂", "岩"], value="砂", label="海底类型")
-                with gr.Row():
-                    ssp_type = gr.Dropdown(choices=["表面声道", "中层极小", "汇聚区"], value="中层极小", label="声速剖面")
-                    freq_band = gr.Dropdown(choices=["低频", "中频", "高频"], value="中频", label="频段")
-                task_goal = gr.Dropdown(choices=["侦察", "跟踪", "定位", "通信"], value="侦察", label="任务目标")
-                preset = gr.Dropdown(
-                    choices=["浅海被动侦察（中频/线阵/SS=3/砂底）", "深海主动搜索（高频/面阵/汇聚区）", "港湾通信（低频/SS=2/泥底）"],
-                    value=None,
-                    label="场景模板"
-                )
-                def apply_preset(p):
-                    if p == "浅海被动侦察（中频/线阵/SS=3/砂底）":
-                        return {
-                            scene_env: gr.update(value="浅海探测 (多途严重)"),
-                            sonar_type: gr.update(value="被动声纳"),
-                            sea_state: gr.update(value="3"),
-                            bottom_type: gr.update(value="砂"),
-                            ssp_type: gr.update(value="中层极小"),
-                            freq_band: gr.update(value="中频"),
-                            task_goal: gr.update(value="侦察"),
-                        }
-                    if p == "深海主动搜索（高频/面阵/汇聚区）":
-                        return {
-                            scene_env: gr.update(value="深海探测 (汇聚区)"),
-                            sonar_type: gr.update(value="主动声纳"),
-                            sea_state: gr.update(value="4"),
-                            bottom_type: gr.update(value="岩"),
-                            ssp_type: gr.update(value="汇聚区"),
-                            freq_band: gr.update(value="高频"),
-                            task_goal: gr.update(value="定位"),
-                        }
-                    if p == "港湾通信（低频/SS=2/泥底）":
-                        return {
-                            scene_env: gr.update(value="通用/默认"),
-                            sonar_type: gr.update(value="被动声纳"),
-                            sea_state: gr.update(value="2"),
-                            bottom_type: gr.update(value="泥"),
-                            ssp_type: gr.update(value="表面声道"),
-                            freq_band: gr.update(value="低频"),
-                            task_goal: gr.update(value="通信"),
-                        }
-                    return {}
-                preset.change(apply_preset, preset, [scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal])
-            
-            # 2. 水声计算器
-            with gr.Group():
-                gr.Markdown("#### 2. 水声计算器 (Calculator)")
-                calc_mode = gr.Dropdown(
-                    choices=[
-                        "传播损失 (TL)", 
-                        "声纳方程 (DT/SNR)", 
-                        "声速估算 (SSP)", 
-                        "多普勒频移 (Doppler)", 
-                        "目标强度估算 (TS)",
-                        "逆向求解: 最大探测距离 (R_max)"
-                    ],
-                    value="传播损失 (TL)",
-                    label="计算模式"
-                )
-                
-                # TL 参数
-                with gr.Column(visible=True) as grp_tl:
-                    tl_r = gr.Number(label="距离 R (km)", value=10)
-                    tl_f = gr.Number(label="频率 f (kHz)", value=1)
-                    tl_type = gr.Dropdown(choices=["spherical", "cylindrical", "hybrid"], value="spherical", label="扩展类型")
-
-                # Sonar Eq 参数
-                with gr.Column(visible=False) as grp_sonar:
-                    eq_sl = gr.Number(label="声源级 SL (dB)", value=220)
-                    eq_tl = gr.Number(label="传播损失 TL (dB)", value=80)
-                    eq_nl = gr.Number(label="噪声级 NL (dB)", value=60)
-                    eq_di = gr.Number(label="指向性指数 DI (dB)", value=20)
-                    eq_active = gr.Radio(["主动", "被动"], value="主动", label="模式")
-                    eq_ts = gr.Number(label="目标强度 TS (dB)", value=10, visible=True)
+                        def update_scene_summary(scene_env_v, sonar_type_v, sea_state_v, bottom_type_v, ssp_type_v, freq_band_v, array_type_v, task_goal_v):
+                            lines = [
+                                f"应用环境：{scene_env_v}",
+                                f"声纳类型：{sonar_type_v}；阵列：{array_type_v}",
+                                f"海况：{sea_state_v}；海底：{bottom_type_v}；声速剖面：{ssp_type_v}；频段：{freq_band_v}；任务：{task_goal_v}"
+                            ]
+                            return "\n".join(lines)
+    
+                        for c in [scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, array_type, task_goal]:
+                            c.change(update_scene_summary, inputs=[scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, array_type, task_goal], outputs=[scene_summary])
+                        preset.change(update_scene_summary, inputs=[scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, array_type, task_goal], outputs=[scene_summary])
                     
-                    def toggle_ts(mode):
-                        return gr.update(visible=(mode=="主动"))
-                    eq_active.change(toggle_ts, eq_active, eq_ts)
-
-                # SSP 参数
-                with gr.Column(visible=False) as grp_ssp:
-                    ssp_t = gr.Number(label="温度 T (°C)", value=15)
-                    ssp_s = gr.Number(label="盐度 S (ppt)", value=35)
-                    ssp_d = gr.Number(label="深度 D (m)", value=100)
-
-                # Doppler 参数
-                with gr.Column(visible=False) as grp_doppler:
-                    dop_vs = gr.Number(label="声源速度 (节)", value=10)
-                    dop_vt = gr.Number(label="目标速度 (节)", value=0)
-                    dop_f0 = gr.Number(label="中心频率 (Hz)", value=3000)
-
-                # TS 参数
-                with gr.Column(visible=False) as grp_ts_calc:
-                    ts_type_sel = gr.Dropdown(choices=["sphere", "cylinder", "submarine"], value="sphere", label="目标类型")
-                    ts_rad = gr.Number(label="半径 (m)", value=1)
-                    ts_len = gr.Number(label="长度 (m)", value=10)
-
-                # 逆向求解参数
-                with gr.Column(visible=False) as grp_inv_rmax:
-                    inv_fom = gr.Number(label="品质因数 FOM (dB)", value=80, info="允许的最大传播损失")
-                    inv_f = gr.Number(label="频率 f (kHz)", value=1)
-                    inv_type = gr.Dropdown(choices=["spherical", "cylindrical", "hybrid"], value="spherical", label="扩展类型")
-
-                with gr.Row():
-                    calc_btn = gr.Button("🚀 计算", variant="secondary", scale=1)
-                    send_chat_btn = gr.Button("📤 发送结果", scale=1)
-                
-                calc_result = gr.Textbox(label="计算结果", lines=3)
-
-                # 模式切换逻辑
-                def change_mode(mode):
-                    return {
-                        grp_tl: gr.update(visible=(mode=="传播损失 (TL)")),
-                        grp_sonar: gr.update(visible=(mode=="声纳方程 (DT/SNR)")),
-                        grp_ssp: gr.update(visible=(mode=="声速估算 (SSP)")),
-                        grp_doppler: gr.update(visible=(mode=="多普勒频移 (Doppler)")),
-                        grp_ts_calc: gr.update(visible=(mode=="目标强度估算 (TS)")),
-                        grp_inv_rmax: gr.update(visible=(mode=="逆向求解: 最大探测距离 (R_max)"))
-                    }
-                
-                calc_mode.change(change_mode, calc_mode, [grp_tl, grp_sonar, grp_ssp, grp_doppler, grp_ts_calc, grp_inv_rmax])
-                
-                # 计算逻辑绑定和发送结果绑定已移动到文件底部，确保组件已定义
-  
-            # 3. 知识洞察
-            with gr.Group():
-                gr.Markdown("#### 3. 知识洞察 (Insight)")
-                
-                # 统计图表展示区 (替代原词云) - 使用 HTML 避免工具栏按钮
-                chart_image = gr.HTML(label="知识库热度榜 (Top 5)", visible=False, show_label=True)
-                
-                with gr.Accordion("📊 详细数据", open=False):
-                    stat_output = gr.JSON(label="知识库规模")
-                    refresh_stat_btn = gr.Button("🔄 刷新排行榜")
-                
-                gr.Markdown("**🔥 热门术语 (点击查看关联问题)**")
-                with gr.Column(): # 改用垂直排列
-                    # 5个热词按钮 (Top 5) - 使用 primary 样式更醒目sh
-                    hot_btn1 = gr.Button("1. 加载中...", variant="primary")
-                    hot_btn2 = gr.Button("2. 加载中...", variant="primary")
-                    hot_btn3 = gr.Button("3. 加载中...", variant="primary")
-                    hot_btn4 = gr.Button("4. 加载中...", variant="primary")
-                    hot_btn5 = gr.Button("5. 加载中...", variant="primary")
-                
-                # 推荐问题显示区 (初始隐藏，点击热词后显示)
-                with gr.Group(visible=False) as q_group:
-                    gr.Markdown("##### 💡 推荐问题 (点击发送):")
-                    q_btn1 = gr.Button("问题1", size="sm", variant="secondary")
-                    q_btn2 = gr.Button("问题2", size="sm", variant="secondary")
-                    q_btn3 = gr.Button("问题3", size="sm", variant="secondary")
-
-                def refresh_insight():
-                    stats, keywords, chart_path = get_knowledge_stats()
-                    
-                    # 格式化热词按钮文本
-                    btns = []
-                    for i in range(5):
-                        if i < len(keywords):
-                            word, count = keywords[i]
-                            # 使用更清晰的格式
-                            btns.append(f"{i+1}. {word} ({count})")
-                        else:
-                            btns.append("-")
-                            
-                    # 更新图表 (以 base64 方式嵌入，避免工具栏)
-                    chart_update = gr.update(visible=False)
-                    if chart_path and os.path.exists(chart_path):
-                        try:
-                            import base64
-                            with open(chart_path, "rb") as f:
-                                b64 = base64.b64encode(f.read()).decode("ascii")
-                            html = f'<div style="width:100%;text-align:center;"><img src="data:image/png;base64,{b64}" alt="Top 5 Ranking" style="max-width:100%;height:auto;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.15);" /></div>'
-                            chart_update = gr.update(value=html, visible=True)
-                        except Exception as _:
+                    with gr.Group(visible=False) as grp_calc:
+                        gr.Markdown("#### 2. 水声计算器 (Calculator)")
+                        calc_mode = gr.Dropdown(choices=["传播损失 (TL)", "声纳方程 (DT/SNR)", "声速估算 (SSP)", "多普勒频移 (Doppler)", "目标强度估算 (TS)", "逆向求解: 最大探测距离 (R_max)", "环境噪声估算 (Wenz)", "阵列性能估算 (DI)"], value="传播损失 (TL)", label="计算模式")
+                        with gr.Column(visible=True) as grp_tl:
+                            tl_r = gr.Number(label="距离 R (km)", value=10)
+                            tl_f = gr.Number(label="频率 f (kHz)", value=1)
+                            tl_type = gr.Dropdown(choices=["spherical", "cylindrical", "hybrid"], value="spherical", label="扩展类型")
+                            with gr.Accordion("📈 传播损失曲线", open=False):
+                                tl_plot_btn = gr.Button("生成 TL-Range 曲线", size="sm")
+                                tl_plot_img = gr.Image(label="曲线图", type="filepath", visible=False)
+                                def plot_tl(f_val, r_val):
+                                    max_r = max(20.0, float(r_val) * 1.5)
+                                    path = generate_tl_range_plot(float(f_val), max_r)
+                                    return gr.update(value=path, visible=True)
+                                tl_plot_btn.click(plot_tl, inputs=[tl_f, tl_r], outputs=[tl_plot_img])
+                        with gr.Column(visible=False) as grp_sonar:
+                            eq_sl = gr.Number(label="声源级 SL (dB)", value=220)
+                            eq_tl = gr.Number(label="传播损失 TL (dB)", value=80)
+                            eq_nl = gr.Number(label="噪声级 NL (dB)", value=60)
+                            eq_di = gr.Number(label="指向性指数 DI (dB)", value=20)
+                            eq_active = gr.Radio(["主动", "被动"], value="主动", label="模式")
+                            eq_ts = gr.Number(label="目标强度 TS (dB)", value=10, visible=True)
+                            def toggle_ts(mode):
+                                return gr.update(visible=(mode=="主动"))
+                            eq_active.change(toggle_ts, eq_active, eq_ts)
+                        with gr.Column(visible=False) as grp_ssp:
+                            ssp_t = gr.Number(label="温度 T (°C)", value=15)
+                            ssp_s = gr.Number(label="盐度 S (ppt)", value=35)
+                            ssp_d = gr.Number(label="深度 D (m)", value=100)
+                        with gr.Column(visible=False) as grp_doppler:
+                            dop_vs = gr.Number(label="声源速度 (节)", value=10)
+                            dop_vt = gr.Number(label="目标速度 (节)", value=0)
+                            dop_f0 = gr.Number(label="中心频率 (Hz)", value=3000)
+                        with gr.Column(visible=False) as grp_ts_calc:
+                            ts_type_sel = gr.Dropdown(choices=["sphere", "cylinder", "submarine"], value="sphere", label="目标类型")
+                            ts_rad = gr.Number(label="半径 (m)", value=1)
+                            ts_len = gr.Number(label="长度 (m)", value=10)
+                        with gr.Column(visible=False) as grp_inv_rmax:
+                            inv_fom = gr.Number(label="品质因数 FOM (dB)", value=80, info="允许的最大传播损失")
+                            inv_f = gr.Number(label="频率 f (kHz)", value=1)
+                            inv_type = gr.Dropdown(choices=["spherical", "cylindrical", "hybrid"], value="spherical", label="扩展类型")
+                        with gr.Column(visible=False) as grp_wenz:
+                            wenz_ss = gr.Dropdown(choices=[str(i) for i in range(0,7)], value="3", label="海况等级")
+                            wenz_f = gr.Number(label="频率 (kHz)", value=1.0)
+                            wenz_traffic = gr.Dropdown(choices=[("低", 1), ("中", 2), ("高", 3)], value=2, label="航运密度")
+                        with gr.Column(visible=False) as grp_array:
+                            array_type_sel = gr.Dropdown(choices=[("直线阵", "line"), ("平面阵", "planar")], value="line", label="阵列类型")
+                            array_n = gr.Number(label="阵元总数 N", value=32)
+                            array_d = gr.Number(label="阵元间距 (以波长计)", value=0.5, info="例如 0.5 表示半波长")
+                        with gr.Row():
+                            calc_btn = gr.Button("🚀 计算", variant="secondary", scale=1)
+                            send_chat_btn = gr.Button("📤 发送结果", scale=1)
+                        calc_result = gr.Textbox(label="计算结果", lines=3)
+                        def change_mode(mode):
+                            return {grp_tl: gr.update(visible=(mode=="传播损失 (TL)")), grp_sonar: gr.update(visible=(mode=="声纳方程 (DT/SNR)")), grp_ssp: gr.update(visible=(mode=="声速估算 (SSP)")), grp_doppler: gr.update(visible=(mode=="多普勒频移 (Doppler)")), grp_ts_calc: gr.update(visible=(mode=="目标强度估算 (TS)")), grp_inv_rmax: gr.update(visible=(mode=="逆向求解: 最大探测距离 (R_max)")), grp_wenz: gr.update(visible=(mode=="环境噪声估算 (Wenz)")), grp_array: gr.update(visible=(mode=="阵列性能估算 (DI)"))}
+                        calc_mode.change(change_mode, calc_mode, [grp_tl, grp_sonar, grp_ssp, grp_doppler, grp_ts_calc, grp_inv_rmax, grp_wenz, grp_array])
+    
+                    with gr.Group(visible=False) as grp_insight:
+                        gr.Markdown("#### 3. 知识洞察 (Insight)")
+                        chart_image = gr.HTML(label="知识库热度榜 (Top 5)", visible=False, show_label=True)
+                        with gr.Accordion("📊 详细数据", open=False):
+                            stat_output = gr.JSON(label="知识库规模")
+                            refresh_stat_btn = gr.Button("🔄 刷新排行榜")
+                        gr.Markdown("**🔥 热门术语 (点击查看关联问题)**")
+                        with gr.Column():
+                            hot_btn1 = gr.Button("1. 加载中...", variant="primary")
+                            hot_btn2 = gr.Button("2. 加载中...", variant="primary")
+                            hot_btn3 = gr.Button("3. 加载中...", variant="primary")
+                            hot_btn4 = gr.Button("4. 加载中...", variant="primary")
+                            hot_btn5 = gr.Button("5. 加载中...", variant="primary")
+                        with gr.Group(visible=False) as q_group:
+                            gr.Markdown("##### 💡 推荐问题 (点击发送):")
+                            q_btn1 = gr.Button("问题1", size="sm", variant="secondary")
+                            q_btn2 = gr.Button("问题2", size="sm", variant="secondary")
+                            q_btn3 = gr.Button("问题3", size="sm", variant="secondary")
+                        def refresh_insight():
+                            stats, keywords, chart_path = get_knowledge_stats()
+                            btns = []
+                            for i in range(5):
+                                if i < len(keywords):
+                                    word, count = keywords[i]
+                                    btns.append(f"{i+1}. {word} ({count})")
+                                else:
+                                    btns.append("-")
                             chart_update = gr.update(visible=False)
-                    
-                    return stats, chart_update, btns[0], btns[1], btns[2], btns[3], btns[4]
+                            if chart_path and os.path.exists(chart_path):
+                                try:
+                                    import base64
+                                    with open(chart_path, "rb") as f:
+                                        b64 = base64.b64encode(f.read()).decode("ascii")
+                                    html = f'<div style="width:100%;text-align:center;"><img src="data:image/png;base64,{b64}" alt="Top 5 Ranking" style="max-width:100%;height:auto;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.15);" /></div>'
+                                    chart_update = gr.update(value=html, visible=True)
+                                except Exception as _:
+                                    chart_update = gr.update(visible=False)
+                            return stats, chart_update, btns[0], btns[1], btns[2], btns[3], btns[4]
+                        refresh_stat_btn.click(refresh_insight, inputs=[], outputs=[stat_output, chart_image, hot_btn1, hot_btn2, hot_btn3, hot_btn4, hot_btn5])
+                        sidebar_menu.change(toggle_menu, inputs=[sidebar_menu], outputs=[grp_scene, grp_calc, grp_insight])
+                        def on_hot_word_click(btn_text):
+                            if not btn_text or btn_text == "-":
+                                return gr.update(visible=False), "Q1", "Q2", "Q3"
+                            try:
+                                parts = btn_text.split('.')
+                                if len(parts) > 1:
+                                    middle = parts[1].strip()
+                                    word = middle.rsplit(' (', 1)[0]
+                                else:
+                                    word = btn_text
+                            except:
+                                word = btn_text
+                            if word == "加载中..." or word == "暂无数据":
+                                return gr.update(visible=False), "Q1", "Q2", "Q3"
+                            questions = get_related_questions(word)
+                            qs = questions + ["无更多推荐"] * (3 - len(questions))
+                            return gr.update(visible=True), qs[0], qs[1], qs[2]
+                        hot_btn1.click(on_hot_word_click, hot_btn1, [q_group, q_btn1, q_btn2, q_btn3])
+                        hot_btn2.click(on_hot_word_click, hot_btn2, [q_group, q_btn1, q_btn2, q_btn3])
+                        hot_btn3.click(on_hot_word_click, hot_btn3, [q_group, q_btn1, q_btn2, q_btn3])
+                        hot_btn4.click(on_hot_word_click, hot_btn4, [q_group, q_btn1, q_btn2, q_btn3])
+                        hot_btn5.click(on_hot_word_click, hot_btn5, [q_group, q_btn1, q_btn2, q_btn3])
+                        def click_question(q):
+                            if q and q != "无更多推荐":
+                                return q
+                            return gr.update()
 
-                refresh_stat_btn.click(
-                    refresh_insight,
-                    inputs=[],
-                    outputs=[stat_output, chart_image, hot_btn1, hot_btn2, hot_btn3, hot_btn4, hot_btn5]
-                )
-                
-                # 点击热词 -> 更新推荐问题 -> 显示问题区
-                def on_hot_word_click(btn_text):
-                    # 从按钮文本提取关键词 "1. 传播损失 (50)" -> "传播损失"
-                    if not btn_text or btn_text == "-":
-                        return gr.update(visible=False), "Q1", "Q2", "Q3"
-                    
-                    # 修正正则提取中文词
-                    # 格式可能是 "1. 传播损失 (50)" 或 "传播损失"
-                    # 尝试更健壮的匹配：取第一个非数字非点非空格的连续字符串
-                    # 或者简单 split
-                    try:
-                        # 假设格式是 "排名. 词 (频次)"
-                        parts = btn_text.split('.')
-                        if len(parts) > 1:
-                            # 取第二部分 " 传播损失 (50)"
-                            middle = parts[1].strip()
-                            # 去掉最后的 (数字)
-                            word = middle.rsplit(' (', 1)[0]
-                        else:
-                            word = btn_text
-                    except:
-                        word = btn_text
-                    
-                    if word == "加载中..." or word == "暂无数据":
-                        return gr.update(visible=False), "Q1", "Q2", "Q3"
-                    
-                    questions = get_related_questions(word)
-                    qs = questions + ["无更多推荐"] * (3 - len(questions))
-                    return gr.update(visible=True), qs[0], qs[1], qs[2]
-                
-                # 绑定热词点击事件
-                hot_btn1.click(on_hot_word_click, hot_btn1, [q_group, q_btn1, q_btn2, q_btn3])
-                hot_btn2.click(on_hot_word_click, hot_btn2, [q_group, q_btn1, q_btn2, q_btn3])
-                hot_btn3.click(on_hot_word_click, hot_btn3, [q_group, q_btn1, q_btn2, q_btn3])
-                hot_btn4.click(on_hot_word_click, hot_btn4, [q_group, q_btn1, q_btn2, q_btn3])
-                hot_btn5.click(on_hot_word_click, hot_btn5, [q_group, q_btn1, q_btn2, q_btn3])
+                with gr.Column(scale=3):
+                    gr.Markdown("### 🤖 智能问答与分析")
+                    chatbot = gr.Chatbot(label="对话记录", height=600)
+                    with gr.Row():
+                        msg = gr.Textbox(label="请输入问题", placeholder="例如：在浅海环境下，多途效应对探测距离有什么影响？", lines=2, scale=4)
+                        send = gr.Button("发送", variant="primary", scale=1)
+                    with gr.Row():
+                        clear = gr.Button("🧹 清空对话")
+                        upload_btn_modal = gr.Button("📂 知识库管理")
+                    gr.Markdown("#### 💡 猜你想问")
+                    with gr.Row():
+                        gr.Button("如何计算传播损失？").click(lambda: "如何计算传播损失？", None, msg)
+                        gr.Button("浅海声传播有什么特点？").click(lambda: "浅海声传播有什么特点？", None, msg)
+                        gr.Button("被动声纳方程是什么？").click(lambda: "被动声纳方程是什么？", None, msg)
 
-                # 绑定推荐问题点击 -> 发送
-                def click_question(q):
-                    if q and q != "无更多推荐":
-                        return q
-                    return gr.update()
-
-                # q_btn bindings moved to end of file to ensure msg is defined
-
-        # === 右侧主界面 (Main Panel) ===
-        with gr.Column(scale=3):
-            gr.Markdown("### 🤖 智能问答与分析")
-            
-            chatbot = gr.Chatbot(
-                label="对话记录", 
-                height=600
-                # type="messages" # Removed for compatibility with older Gradio versions
-            )
-            
-            with gr.Row():
-                msg = gr.Textbox(
-                    label="请输入问题",
-                    placeholder="例如：在浅海环境下，多途效应对探测距离有什么影响？",
-                    lines=2,
-                    scale=4
-                )
-                send = gr.Button("发送", variant="primary", scale=1)
-            
-            with gr.Row():
-                clear = gr.Button("🧹 清空对话")
-                upload_btn_modal = gr.Button("📂 管理知识库文档")
-
-            # 示例问题
-            gr.Markdown("#### 💡 猜你想问")
-            with gr.Row():
-                gr.Button("如何计算传播损失？").click(lambda: "如何计算传播损失？", None, msg)
-                gr.Button("浅海声传播有什么特点？").click(lambda: "浅海声传播有什么特点？", None, msg)
-                gr.Button("被动声纳方程是什么？").click(lambda: "被动声纳方程是什么？", None, msg)
-
-            # 知识库管理弹窗 (用 Accordion 模拟，Gradio 暂无原生 Modal)
-            kb_accordion = gr.Accordion("📚 知识库管理 (点击展开)", open=False)
-            with kb_accordion:
+        with gr.Tab("知识库管理", id="kb"):
+            gr.Markdown("## 📚 知识库管理")
+            with gr.Tabs():
                 with gr.Tab("上传文档"):
-                    f_in = gr.File(label="上传文件")
-                    t_in = gr.Radio(["core", "supplement"], value="core", label="类型")
-                    u_btn = gr.Button("上传并入库")
-                    u_out = gr.Textbox(label="结果")
-                    u_btn.click(upload_and_process, [f_in, t_in], u_out)
+                    kb_f_in = gr.File(label="上传文件")
+                    kb_t_in = gr.Radio(["core", "supplement"], value="core", label="类型")
+                    kb_u_btn = gr.Button("上传并入库", variant="primary")
+                    kb_u_out = gr.Textbox(label="结果")
+                    kb_u_btn.click(upload_and_process, [kb_f_in, kb_t_in], kb_u_out)
                 with gr.Tab("同步 Data 目录"):
-                    s_btn = gr.Button("扫描并同步")
-                    s_out = gr.Textbox(label="结果")
-                    s_btn.click(sync_data_folder_ui, None, s_out)
+                    kb_s_btn = gr.Button("扫描并同步", variant="primary")
+                    kb_s_out = gr.Textbox(label="结果")
+                    kb_s_btn.click(sync_data_folder_ui, None, kb_s_out)
+                with gr.Tab("统计与热词"):
+                    kb_refresh_btn = gr.Button("刷新统计", variant="primary")
+                    kb_stat_output = gr.JSON(label="知识库规模")
+                    kb_keywords = gr.Dataframe(headers=["术语", "频次"], datatype=["str", "number"], row_count=5, column_count=(2, "fixed"))
+                    kb_chart_image = gr.HTML(visible=False)
+                    kb_list_btn = gr.Button("列出已入库文件")
+                    kb_files_out = gr.Textbox(label="已入库文件", lines=10)
 
-            # 绑定按钮点击事件，切换 Accordion 的可见性或打开状态
-            # 注意：Gradio 的 Accordion 没有直接的 open 属性可以动态绑定，通常用 visible 或 render
-            # 这里我们简单实现：点击按钮切换 Accordion 的 open 状态 (需要 Gradio 4.x+)
-            # 或者更简单的：按钮只是一个提示，让用户去点下面的 Accordion
-            # 为了更好的体验，我们尝试用 render visibility
-            
-            def toggle_kb_panel():
-                return gr.update(open=True)
-            
-            upload_btn_modal.click(toggle_kb_panel, None, kb_accordion)
+                    def refresh_kb_stats():
+                        stats, keywords, chart_path = get_knowledge_stats()
+                        df = [[w, c] for w, c in (keywords or [])]
+                        chart_update = gr.update(visible=False)
+                        if chart_path and os.path.exists(chart_path):
+                            try:
+                                import base64
+                                with open(chart_path, "rb") as f:
+                                    b64 = base64.b64encode(f.read()).decode("ascii")
+                                html = f'<div style="width:100%;text-align:center;"><img src="data:image/png;base64,{b64}" alt="Top 5 Ranking" style="max-width:100%;height:auto;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.15);" /></div>'
+                                chart_update = gr.update(value=html, visible=True)
+                            except Exception as _:
+                                chart_update = gr.update(visible=False)
+                        return stats, df, chart_update
+
+                    def list_indexed_files():
+                        files = vector_store.get_indexed_files()
+                        files = sorted(files)
+                        return "\n".join(files) if files else "暂无已入库文件。"
+
+                    kb_refresh_btn.click(refresh_kb_stats, inputs=[], outputs=[kb_stat_output, kb_keywords, kb_chart_image])
+                    kb_list_btn.click(list_indexed_files, inputs=[], outputs=[kb_files_out])
+
+    def go_to_kb():
+        return gr.update(selected="kb")
+
+    upload_btn_modal.click(go_to_kb, inputs=[], outputs=[top_tabs])
 
     # ================= 事件绑定 (Event Bindings) =================
     # 必须放在所有组件定义之后，防止 NameError
 
+    # 保持“手动刷新”显示图表：不在页面加载或跳转时自动刷新
+
     # 1. 聊天事件
-    send.click(chat_response, [msg, chatbot, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal], [msg, chatbot])
-    msg.submit(chat_response, [msg, chatbot, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal], [msg, chatbot])
+    send.click(chat_response, [msg, chatbot, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal, array_type], [msg, chatbot])
+    msg.submit(chat_response, [msg, chatbot, scene_env, sonar_type, sea_state, bottom_type, ssp_type, freq_band, task_goal, array_type], [msg, chatbot])
     clear.click(lambda: [], None, chatbot, queue=False)
 
     # 2. 计算器事件
     calc_btn.click(
         run_calculator,
-        inputs=[calc_mode, tl_r, tl_f, tl_type, eq_sl, eq_tl, eq_nl, eq_di, eq_ts, eq_active, ssp_t, ssp_s, ssp_d, dop_vs, dop_vt, dop_f0, ts_type_sel, ts_rad, ts_len, inv_fom, inv_f, inv_type],
+        inputs=[calc_mode, tl_r, tl_f, tl_type, eq_sl, eq_tl, eq_nl, eq_di, eq_ts, eq_active, ssp_t, ssp_s, ssp_d, dop_vs, dop_vt, dop_f0, ts_type_sel, ts_rad, ts_len, inv_fom, inv_f, inv_type, wenz_ss, wenz_f, wenz_traffic, array_type_sel, array_n, array_d],
         outputs=calc_result
     )
 
@@ -601,4 +542,6 @@ if __name__ == "__main__":
     print("Startup: Scanning 'data' folder...")
     vector_store.scan_and_ingest("data")
     
-    demo.queue().launch(server_name="127.0.0.1", server_port=7860, theme=gr.themes.Soft(primary_hue="indigo"))
+    # Try to launch on 7860, but if occupied, gradio will automatically find another port if we remove server_port constraint
+    # Or we can specify a starting port and let it auto-increment, but gradio does this by default if server_port is None.
+    demo.queue().launch(server_name="127.0.0.1", theme=gr.themes.Soft(primary_hue="indigo"))

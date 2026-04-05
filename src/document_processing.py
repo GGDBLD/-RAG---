@@ -41,8 +41,7 @@ class DocumentProcessor:
             if len(raw) <= 3 and all(ch in '-_=·•—~*·. ' for ch in raw):
                 continue
             
-            # Remove lines with high density of special/garbled characters
-            # e.g., "霪藜j麓震燃懑 瀚鬻熊?掣蝌"
+           
             special_chars = re.findall(r'[^\u4e00-\u9fa5a-zA-Z0-9\s\.\,\，\。\、\(\)（）]', raw)
             if len(raw) > 5 and len(special_chars) / len(raw) > 0.4:
                 continue

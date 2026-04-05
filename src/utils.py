@@ -122,6 +122,7 @@ def generate_knowledge_charts(top_keywords: List[Tuple[str, int]]) -> str:
     ax.set_xlabel("Frequency Count")
     
     # 设置y轴标签字体（支持中文）
+    ax.set_yticks(list(range(len(words))))
     ax.set_yticklabels(words, fontproperties=font_prop)
     
     # 在柱子上标数值
@@ -139,6 +140,59 @@ def generate_knowledge_charts(top_keywords: List[Tuple[str, int]]) -> str:
     # 保存图片
     chart_path = "temp_ranking_chart.png"
     plt.savefig(chart_path, bbox_inches='tight')
+    plt.close(fig)
+    
+    return chart_path
+
+def generate_tl_range_plot(f_khz: float = 1.0, max_range_km: float = 20.0) -> str:
+    """
+    生成传播损失随距离变化的曲线图 (球面 vs 柱面)
+    :param f_khz: 频率 (kHz)
+    :param max_range_km: 最大距离 (km)
+    :return: 图像保存路径
+    """
+    import math
+    import numpy as np
+    
+    ranges = np.linspace(0.1, max_range_km, 200) # 0.1km 到 max_range_km
+    
+    # 吸收系数计算 (Thorpe)
+    f2 = f_khz ** 2
+    alpha = (0.11 * f2 / (1 + f2)) + (44 * f2 / (4100 + f2)) + (2.75e-4 * f2) + 0.003
+    
+    tl_spherical = []
+    tl_cylindrical = []
+    
+    for r in ranges:
+        r_m = r * 1000.0
+        # 球面
+        tl_s = 20 * math.log10(r_m) + alpha * r
+        tl_spherical.append(tl_s)
+        # 柱面
+        tl_c = 10 * math.log10(r_m) + alpha * r
+        tl_cylindrical.append(tl_c)
+        
+    font_path = "msyh.ttc"
+    if os.path.exists(r"C:\Windows\Fonts\msyh.ttc"):
+        font_path = r"C:\Windows\Fonts\msyh.ttc"
+    elif os.path.exists(r"C:\Windows\Fonts\simhei.ttf"):
+        font_path = r"C:\Windows\Fonts\simhei.ttf"
+        
+    from matplotlib.font_manager import FontProperties
+    font_prop = FontProperties(fname=font_path)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(ranges, tl_spherical, label='球面扩展 (20logR)', color='blue')
+    ax.plot(ranges, tl_cylindrical, label='柱面扩展 (10logR)', color='green', linestyle='--')
+    
+    ax.set_title(f"传播损失曲线 (频率: {f_khz}kHz)", fontproperties=font_prop, fontsize=12)
+    ax.set_xlabel("距离 (km)", fontproperties=font_prop)
+    ax.set_ylabel("TL (dB)", fontproperties=font_prop)
+    ax.legend(prop=font_prop)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    
+    chart_path = "temp_tl_plot.png"
+    plt.savefig(chart_path, bbox_inches='tight', dpi=100)
     plt.close(fig)
     
     return chart_path

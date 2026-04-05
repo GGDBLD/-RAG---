@@ -234,6 +234,7 @@ class QAChainHandler:
         m_sp = re.search(r"\[声速剖面：(.*?)\]", question)
         m_fb = re.search(r"\[频段：(.*?)\]", question)
         m_task = re.search(r"\[任务：(.*?)\]", question)
+        m_arr = re.search(r"\[阵列：(.*?)\]", question)
         if m_env:
             v = m_env.group(1)
             if "浅海" in v:
@@ -269,6 +270,9 @@ class QAChainHandler:
         if m_task:
             v = m_task.group(1)
             boost_terms += [v]
+        if m_arr:
+            v = m_arr.group(1)
+            boost_terms += [v, "阵列"]
         if boost_terms:
             prefix = " ".join(boost_terms[:12])
             search_query = (prefix + " " + search_query)[-768:]
@@ -404,6 +408,10 @@ class QAChainHandler:
             if m_dev:
                 device_context = m_dev.group(1)
                 effective_question = effective_question.replace(m_dev.group(0), "").strip()
+            m_arr = re.search(r"\[阵列：(.*?)\]", effective_question)
+            if m_arr:
+                device_context = f"{device_context}/{m_arr.group(1)}"
+                effective_question = effective_question.replace(m_arr.group(0), "").strip()
             response = chain.invoke({"context": context, "question": effective_question, "env_context": env_context, "device_context": device_context})
             
             # Handle AIMessage object from ChatOpenAI
@@ -444,6 +452,10 @@ class QAChainHandler:
             if match_dev:
                 device_context = match_dev.group(1)
                 effective_question = effective_question.replace(match_dev.group(0), "").strip()
+            match_arr = re.search(r"\[阵列：(.*?)\]", question)
+            if match_arr:
+                device_context = f"{device_context}/{match_arr.group(1)}"
+                effective_question = effective_question.replace(match_arr.group(0), "").strip()
 
             # 计算类与部分高频结论：优先走确定性路径，保证与计算器一致
             if "指向性指数" in effective_question or "DI" in effective_question:
@@ -586,6 +598,43 @@ class QAChainHandler:
                     return AcousticCalculator.solve_max_range(fom, f_khz, t)
                 if "逆向求解" in text or "最大探测距离" in text:
                     return "需要参数：FOM（dB），可选频率 (kHz) 与扩展类型。"
+                return None
+                
+            # Ambient Noise
+            if "环境噪声" in text or "Wenz" in text:
+                import re
+                ss = 3; f_khz = 1.0; traffic = 2
+                m_ss = re.search(r"海况\s*([0-6])", text)
+                m_f_khz = re.search(r"频率\s*([0-9]+(?:\.[0-9]+)?)\s*kHz", text)
+                m_f_hz = re.search(r"频率\s*([0-9]+(?:\.[0-9]+)?)\s*Hz", text)
+                m_tr = re.search(r"航运(?:密度)?\s*(低|中|高|[123])", text)
+                
+                if m_ss: ss = int(m_ss.group(1))
+                if m_f_khz: f_khz = float(m_f_khz.group(1))
+                elif m_f_hz: f_khz = float(m_f_hz.group(1)) / 1000.0
+                if m_tr:
+                    tr_val = m_tr.group(1)
+                    if tr_val in ["低", "1"]: traffic = 1
+                    elif tr_val in ["高", "3"]: traffic = 3
+                    else: traffic = 2
+                    
+                if "计算" in text or "估算" in text:
+                    return AcousticCalculator.estimate_ambient_noise(ss, f_khz, traffic)
+                return None
+
+            # Array Directivity
+            if "阵列" in text and ("计算" in text or "估算" in text or "指向性" in text or "波束宽度" in text):
+                import re
+                a_type = "line"; n = 32; d = 0.5
+                if "平面阵" in text or "面阵" in text: a_type = "planar"
+                m_n = re.search(r"阵元(?:数|总数)?\s*([0-9]+)", text)
+                m_d = re.search(r"间距\s*([0-9]+(?:\.[0-9]+)?)", text)
+                
+                if m_n: n = int(m_n.group(1))
+                if m_d: d = float(m_d.group(1))
+                
+                if "计算" in text or "估算" in text:
+                    return AcousticCalculator.calc_array_directivity(a_type, n, d)
                 return None
         except Exception:
             return None
